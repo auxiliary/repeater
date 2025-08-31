@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SVG Vector Editor</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <h1><i class="fas fa-vector-square"></i> SVG Vector Editor</h1>
+            <div class="header-controls">
+                <button id="clearCanvas" class="btn btn-secondary">
+                    <i class="fas fa-trash"></i> Clear
+                </button>
+                <button id="downloadSVG" class="btn btn-primary">
+                    <i class="fas fa-download"></i> Download SVG
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Side Panel -->
+            <aside class="side-panel">
+                <div class="tool-section">
+                    <h3><i class="fas fa-tools"></i> Tools</h3>
+                    <div class="tool-buttons">
+                        <button class="tool-btn active" data-tool="select" title="Select Tool">
+                            <i class="fas fa-mouse-pointer"></i>
+                        </button>
+                        <button class="tool-btn" data-tool="anchor" title="Anchor Point Tool">
+                            <i class="fas fa-arrows-alt"></i>
+                        </button>
+                        <button class="tool-btn" data-tool="line" title="Line Tool">
+                            <i class="fas fa-minus"></i>
+                        </button>
+                        <button class="tool-btn" data-tool="rectangle" title="Rectangle Tool">
+                            <i class="fas fa-square"></i>
+                        </button>
+                        <button class="tool-btn" data-tool="circle" title="Circle Tool">
+                            <i class="fas fa-circle"></i>
+                        </button>
+                        <button class="tool-btn" data-tool="path" title="Path Tool">
+                            <i class="fas fa-pen"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="tool-section">
+                    <h3><i class="fas fa-palette"></i> Properties</h3>
+                    <div class="property-group">
+                        <label for="strokeColor">Stroke Color:</label>
+                        <div class="color-control">
+                            <input type="color" id="strokeColor" value="#000000">
+                            <button type="button" id="noStrokeColor" class="no-color-btn" title="No stroke">×</button>
+                        </div>
+                    </div>
+                    <div class="property-group">
+                        <label for="fillColor">Fill Color:</label>
+                        <div class="color-control">
+                            <input type="color" id="fillColor" value="#ffffff">
+                            <button type="button" id="noFillColor" class="no-color-btn" title="No fill">×</button>
+                        </div>
+                    </div>
+                    <div class="property-group">
+                        <label for="strokeWidth">Stroke Width:</label>
+                        <input type="range" id="strokeWidth" min="1" max="20" value="2">
+                        <span id="strokeWidthValue">2</span>
+                    </div>
+                    <div class="property-group">
+                        <label for="opacity">Opacity:</label>
+                        <input type="range" id="opacity" min="0" max="100" value="100">
+                        <span id="opacityValue">100%</span>
+                    </div>
+                </div>
+
+                <div class="tool-section">
+                    <h3><i class="fas fa-layer-group"></i> Layers</h3>
+                    <div id="layersList" class="layers-list">
+                        <!-- Layers will be populated here -->
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Canvas Area -->
+            <main class="canvas-area">
+                <div class="canvas-container">
+                    <svg id="svgCanvas" width="800" height="600" viewBox="0 0 800 600">
+                        <defs>
+                            <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e0e0e0" stroke-width="1"/>
+                            </pattern>
+                        </defs>
+                        <rect width="100%" height="100%" fill="url(#grid)"/>
+                    </svg>
+                    <div id="canvasOverlay" class="canvas-overlay"></div>
+                </div>
+            </main>
+        </div>
+
+        <!-- Status Bar -->
+        <footer class="status-bar">
+            <span id="statusText">Ready</span>
+            <span id="coordinates">X: 0, Y: 0</span>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

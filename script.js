@@ -1,3 +1,26 @@
+class EventBus {
+    constructor() {
+        this.events = {};
+    }
+    
+    on(event, callback) {
+        if (!this.events[event]) this.events[event] = [];
+        this.events[event].push(callback);
+    }
+    
+    emit(event, data) {
+        if (this.events[event]) {
+            this.events[event].forEach(callback => callback(data));
+        }
+    }
+    
+    off(event, callback) {
+        if (this.events[event]) {
+            this.events[event] = this.events[event].filter(cb => cb !== callback);
+        }
+    }
+}
+
 class ZoomPanManager {
     constructor(svgElement) {
         this.svg = svgElement;
@@ -132,6 +155,9 @@ class SVGVectorEditor {
         this.controlPreviewLines = []; // New: for curve preview lines
         this.controlHandles = []; // New: for control point handle lines
         
+        // Initialize event bus
+        this.eventBus = new EventBus();
+        
         // Initialize zoom and pan manager
         this.zoomPanManager = new ZoomPanManager(this.svg);
         
@@ -139,11 +165,58 @@ class SVGVectorEditor {
     }
 
     init() {
+        this.setupEventBusListeners();
         this.setupEventListeners();
         this.setupTools();
         this.setupProperties();
         this.setupLayers();
-        this.updateStatus('Ready');
+        this.eventBus.emit('statusUpdate', 'Ready');
+    }
+
+    setupEventBusListeners() {
+        // Listen for element selection events
+        this.eventBus.on('elementSelected', (element) => {
+            this.updatePropertiesPanel(element);
+            this.showSelectionHandles(element);
+            this.showAnchorPoints(element);
+            this.renderRepeatPoints(element);
+        });
+
+        // Listen for selection cleared events
+        this.eventBus.on('selectionCleared', () => {
+            this.clearSelectionHandles();
+            this.clearAnchorPoints();
+            this.clearRepeatPoints();
+        });
+
+        // Listen for status updates
+        this.eventBus.on('statusUpdate', (message) => {
+            this.updateStatus(message);
+        });
+
+        // Listen for layer updates
+        this.eventBus.on('layersChanged', () => {
+            this.updateLayersList();
+        });
+
+        // Listen for tool changes
+        this.eventBus.on('toolChanged', (tool) => {
+            this.eventBus.emit('selectionCleared');
+            this.eventBus.emit('statusUpdate', `${tool.charAt(0).toUpperCase() + tool.slice(1)} Tool Active`);
+        });
+
+        // Listen for property changes
+        this.eventBus.on('propertyChanged', ({ property, value }) => {
+            if (this.selectedElement) {
+                // Handle "none" color values
+                if (property === 'stroke' || property === 'fill') {
+                    const colorValue = value === '#ffffff' ? 'none' : value;
+                    this.selectedElement.setAttribute(property, colorValue);
+                } else {
+                    this.selectedElement.setAttribute(property, value);
+                }
+            }
+        });
     }
 
     setupEventListeners() {
@@ -219,7 +292,7 @@ class SVGVectorEditor {
         const strokeWidthValue = document.getElementById('strokeWidthValue');
         strokeWidthInput.addEventListener('input', (e) => {
             strokeWidthValue.textContent = e.target.value;
-            this.updateSelectedElementProperty('stroke-width', e.target.value);
+            this.eventBus.emit('propertyChanged', { property: 'stroke-width', value: e.target.value });
         });
 
         // Opacity
@@ -227,32 +300,32 @@ class SVGVectorEditor {
         const opacityValue = document.getElementById('opacityValue');
         opacityInput.addEventListener('input', (e) => {
             opacityValue.textContent = e.target.value + '%';
-            this.updateSelectedElementProperty('opacity', e.target.value / 100);
+            this.eventBus.emit('propertyChanged', { property: 'opacity', value: e.target.value / 100 });
         });
 
         // Colors
         document.getElementById('strokeColor').addEventListener('change', (e) => {
-            this.updateSelectedElementProperty('stroke', e.target.value);
+            this.eventBus.emit('propertyChanged', { property: 'stroke', value: e.target.value });
         });
 
         document.getElementById('fillColor').addEventListener('change', (e) => {
-            this.updateSelectedElementProperty('fill', e.target.value);
+            this.eventBus.emit('propertyChanged', { property: 'fill', value: e.target.value });
         });
 
         // No color buttons
         document.getElementById('noStrokeColor').addEventListener('click', () => {
             document.getElementById('strokeColor').value = '#ffffff';
-            this.updateSelectedElementProperty('stroke', '#ffffff');
+            this.eventBus.emit('propertyChanged', { property: 'stroke', value: '#ffffff' });
         });
 
         document.getElementById('noFillColor').addEventListener('click', () => {
             document.getElementById('fillColor').value = '#ffffff';
-            this.updateSelectedElementProperty('fill', '#ffffff');
+            this.eventBus.emit('propertyChanged', { property: 'fill', value: '#ffffff' });
         });
     }
 
     setupLayers() {
-        this.updateLayersList();
+        this.eventBus.emit('layersChanged');
     }
 
     setTool(tool) {
@@ -263,8 +336,9 @@ class SVGVectorEditor {
         }
         
         this.currentTool = tool;
-        this.clearSelection();
-        this.updateStatus(`${tool.charAt(0).toUpperCase() + tool.slice(1)} Tool Active`);
+        
+        // Emit event instead of direct method calls
+        this.eventBus.emit('toolChanged', tool);
         
         // Update cursor
         const cursors = {
@@ -533,10 +607,9 @@ class SVGVectorEditor {
         this.clearSelection();
         this.selectedElement = element;
         element.style.outline = '2px dashed #3498db';
-        this.showSelectionHandles(element);
-        this.showAnchorPoints(element);
-        this.renderRepeatPoints(element);
-        this.updatePropertiesPanel(element);
+        
+        // Emit event instead of direct method calls
+        this.eventBus.emit('elementSelected', element);
         console.log('Element selected:', element.tagName, element);
     }
 
@@ -545,9 +618,9 @@ class SVGVectorEditor {
             this.selectedElement.style.outline = '';
             this.selectedElement = null;
         }
-        this.clearSelectionHandles();
-        this.clearAnchorPoints();
-        this.clearRepeatPoints();
+        
+        // Emit event instead of direct method calls
+        this.eventBus.emit('selectionCleared');
         
         // Clear anchor point selection
         if (this.selectedAnchorPoint) {
@@ -1495,9 +1568,12 @@ class SVGVectorEditor {
     finishDrawingLine(pos) {
         if (this.currentElement) {
             this.elements.push(this.currentElement);
+            const newElement = this.currentElement;
             this.currentElement = null;
-            this.updateLayersList();
-            this.handleDrawRepeatForNewElement(this.elements[this.elements.length - 1]);
+            
+            // Emit event instead of direct method call
+            this.eventBus.emit('layersChanged');
+            this.handleDrawRepeatForNewElement(newElement);
         }
     }
 
@@ -1530,9 +1606,12 @@ class SVGVectorEditor {
     finishDrawingRectangle(pos) {
         if (this.currentElement) {
             this.elements.push(this.currentElement);
+            const newElement = this.currentElement;
             this.currentElement = null;
-            this.updateLayersList();
-            this.handleDrawRepeatForNewElement(this.elements[this.elements.length - 1]);
+            
+            // Emit event instead of direct method call
+            this.eventBus.emit('layersChanged');
+            this.handleDrawRepeatForNewElement(newElement);
         }
     }
 
@@ -1559,9 +1638,12 @@ class SVGVectorEditor {
     finishDrawingCircle(pos) {
         if (this.currentElement) {
             this.elements.push(this.currentElement);
+            const newElement = this.currentElement;
             this.currentElement = null;
-            this.updateLayersList();
-            this.handleDrawRepeatForNewElement(this.elements[this.elements.length - 1]);
+            
+            // Emit event instead of direct method call
+            this.eventBus.emit('layersChanged');
+            this.handleDrawRepeatForNewElement(newElement);
         }
     }
 
@@ -1570,10 +1652,10 @@ class SVGVectorEditor {
         console.log('Adding path point:', pos);
         if (!this.currentPath) {
             this.startNewPath(pos);
-            this.updateStatus('Path started. Click to add points, double-click or press Enter to finish.');
+            this.eventBus.emit('statusUpdate', 'Path started. Click to add points, double-click or press Enter to finish.');
         } else {
             this.addPointToPath(pos);
-            this.updateStatus(`Path: ${this.pathPoints.length} points. Double-click or press Enter to finish.`);
+            this.eventBus.emit('statusUpdate', `Path: ${this.pathPoints.length} points. Double-click or press Enter to finish.`);
         }
     }
 
@@ -1641,8 +1723,10 @@ class SVGVectorEditor {
             this.currentPath = null;
             this.pathPoints = [];
             this.pathSegments = [];
-            this.updateLayersList();
-            this.updateStatus('Path completed');
+            
+            // Emit events instead of direct method calls
+            this.eventBus.emit('layersChanged');
+            this.eventBus.emit('statusUpdate', 'Path completed');
             // Handle draw-repeat cloning for newly created path
             this.handleDrawRepeatForNewElement(finalized);
         } else {
@@ -1664,7 +1748,7 @@ class SVGVectorEditor {
         const count = Math.max(1, Math.min(500, parseInt(document.getElementById('repeatCount').value, 10) || 10));
         this.createOrUpdateRepeatPoints(this.selectedElement, count);
         this.renderRepeatPoints(this.selectedElement);
-        this.updateStatus(`Created ${count} repeat points`);
+        this.eventBus.emit('statusUpdate', `Created ${count} repeat points`);
     }
 
     getRepeatMeta(element) {
@@ -1744,11 +1828,11 @@ class SVGVectorEditor {
             meta.activeIndex = null;
             this.selectedRepeatPoint = null;
             this.renderRepeatPoints(element);
-            this.updateStatus('No repeat point active');
+            this.eventBus.emit('statusUpdate', 'No repeat point active');
         } else {
             meta.activeIndex = index;
             this.renderRepeatPoints(element);
-            this.updateStatus(`Active repeat point: ${index + 1}/${meta.points.length}`);
+            this.eventBus.emit('statusUpdate', `Active repeat point: ${index + 1}/${meta.points.length}`);
             this.selectedRepeatPoint = { element, index };
         }
     }
@@ -1778,7 +1862,7 @@ class SVGVectorEditor {
         }
         clones.forEach(node => this.svg.appendChild(node));
         clones.forEach(node => this.elements.push(node));
-        if (clones.length > 0) this.updateLayersList();
+        if (clones.length > 0) this.eventBus.emit('layersChanged');
     }
 
     getElementReferencePoint(element) {
@@ -1858,7 +1942,7 @@ class SVGVectorEditor {
         console.log('Starting path interaction at:', pos);
         if (!this.currentPath) {
             this.startNewPath(pos);
-            this.updateStatus('Path started. Click to add points, drag to create curves. Double-click or press Enter to finish.');
+            this.eventBus.emit('statusUpdate', 'Path started. Click to add points, drag to create curves. Double-click or press Enter to finish.');
         } else {
             // Start a potential curve creation
             this.startPotentialCurve(pos);
@@ -1869,7 +1953,7 @@ class SVGVectorEditor {
         // Store the position where we started dragging
         this.curveStartPoint = pos;
         this.isCreatingCurve = true;
-        this.updateStatus('Drag to create curve, release to finish');
+                    this.eventBus.emit('statusUpdate', 'Drag to create curve, release to finish');
         console.log('Starting potential curve at:', pos);
     }
 
@@ -1971,7 +2055,7 @@ class SVGVectorEditor {
             this.createStraightSegment(pos);
         }
         
-        this.updateStatus(`Path: ${this.pathSegments.length} segments. Double-click or press Enter to finish.`);
+        this.eventBus.emit('statusUpdate', `Path: ${this.pathSegments.length} segments. Double-click or press Enter to finish.`);
     }
 
     createStraightSegment(endPoint) {
@@ -2312,7 +2396,10 @@ class SVGVectorEditor {
             this.elements.splice(index, 1);
             element.remove();
             this.clearSelection();
-            this.updateLayersList();
+            
+            // Emit event instead of direct method call
+            this.eventBus.emit('layersChanged');
+            
             if (this.selectedRepeatPoint && this.selectedRepeatPoint.element === element) {
                 this.selectedRepeatPoint = null;
             }
@@ -2354,7 +2441,9 @@ class SVGVectorEditor {
         this.clearSelection();
         // Clear any active repeat point when canvas is cleared
         this.selectedRepeatPoint = null;
-        this.updateLayersList();
+        
+        // Emit events instead of direct method calls
+        this.eventBus.emit('layersChanged');
         this.showMessage('Canvas cleared', 'success');
     }
 

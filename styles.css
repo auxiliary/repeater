@@ -423,6 +423,44 @@ body {
     cursor: pointer;
 }
 
+/* Repeat Points */
+.repeat-point {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    background: #8e44ad;
+    border: 2px solid white;
+    transform: rotate(45deg);
+    pointer-events: auto;
+    cursor: pointer;
+    z-index: 900;
+}
+
+.repeat-point:hover {
+    background: #7d3c98;
+    transform: rotate(45deg) scale(1.2);
+}
+
+.repeat-point.selected {
+    background: #9b59b6;
+    box-shadow: 0 0 8px rgba(142, 68, 173, 0.6);
+}
+
+.repeat-points-control {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.repeat-points-control input[type="number"] {
+    width: 80px;
+    padding: 0.25rem 0.5rem;
+}
+
+.muted {
+    color: #6c757d;
+}
+
 /* Control Points */
 .control-point {
     position: absolute;

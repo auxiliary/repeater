@@ -99,6 +99,20 @@
                         <!-- Layers will be populated here -->
                     </div>
                 </div>
+
+                <div class="tool-section">
+                    <h3><i class="fas fa-infinity"></i> Generative</h3>
+                    <div class="property-group">
+                        <label for="repeatCount">Repeat points:</label>
+                        <div class="repeat-points-control">
+                            <input type="number" id="repeatCount" min="1" max="500" value="10" />
+                            <button id="createRepeatPoints" class="btn btn-secondary" title="Create Repeat Points">
+                                <i class="fas fa-clone"></i>
+                            </button>
+                        </div>
+                        <small class="muted">Select a line/path, set count, then create.</small>
+                    </div>
+                </div>
             </aside>
 
             <!-- Canvas Area -->

@@ -9,7 +9,7 @@ A modern, feature-rich SVG vector editor built with vanilla JavaScript, HTML, an
 - **Line Tool**: Draw straight lines by clicking and dragging
 - **Rectangle Tool**: Create rectangles by clicking and dragging
 - **Circle Tool**: Draw circles by clicking and dragging from center
-- **Path Tool**: Create custom paths with multiple anchor points
+- **Path Tool**: Create custom paths with straight lines and curved segments
 
 ### 🎛️ Properties Panel
 - **Stroke Color**: Change the outline color of selected elements
@@ -67,8 +67,19 @@ A modern, feature-rich SVG vector editor built with vanilla JavaScript, HTML, an
 ### Path Tool
 - Click to add anchor points
 - Each click adds a new point to the path
-- Paths are automatically connected with straight lines
-- Double-click or press Escape to finish the path
+- **Drag while clicking to create curved segments** using cubic Bezier curves
+- Paths can mix straight lines and curves seamlessly
+- Double-click or press Enter to finish the path
+
+#### Creating Curved Paths
+1. **Start a path**: Click to place the first anchor point
+2. **Add straight segments**: Click to add more points (creates straight lines)
+3. **Create curves**: Click and drag to create curved segments
+   - The drag distance and direction determine the curve shape
+   - Control points are automatically calculated for smooth curves
+4. **Edit curves**: Use the Anchor Point tool to adjust control points
+   - Orange control points appear for curved segments
+   - Drag control points to modify curve shape
 
 ## Technical Details
 
@@ -89,7 +100,7 @@ A modern, feature-rich SVG vector editor built with vanilla JavaScript, HTML, an
 - `<line>` - Straight lines
 - `<rect>` - Rectangles
 - `<circle>` - Circles
-- `<path>` - Custom paths with anchor points
+- `<path>` - Custom paths with anchor points and control points for curves
 
 ## Customization
 
@@ -117,6 +128,7 @@ The application uses CSS custom properties and modern design patterns. You can c
 - **Grouping**: Group multiple elements
 - **Export Options**: PNG, JPG, PDF formats
 - **Templates**: Pre-made design templates
+- **Advanced Path Tools**: Smooth curves, path simplification
 
 ## Contributing
 

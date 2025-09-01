@@ -8,15 +8,29 @@ class SVGVectorEditor {
         this.elements = [];
         this.currentPath = null;
         this.pathPoints = [];
+        this.pathSegments = []; // New: stores path segments with anchor and control points
         this.drawingStartPoint = null;
         this.selectionBox = null;
         this.selectionHandles = [];
         this.anchorPoints = [];
+        this.controlPoints = []; // New: stores control points for curves
         this.isDragging = false;
         this.dragOffset = { x: 0, y: 0 };
         this.selectedAnchorPoint = null;
         this.isDraggingAnchor = false;
         this.anchorDragOffset = { x: 0, y: 0 };
+        this.isDraggingControl = false; // New: for dragging control points
+        this.selectedControlPoint = null; // New: selected control point
+        this.controlDragOffset = { x: 0, y: 0 }; // New: control point drag offset
+        this.controlPreviewLines = []; // New: for curve preview lines
+        this.controlHandles = []; // New: for control point handle lines
+        
+        // Zoom and pan properties
+        this.zoom = 1;
+        this.panX = 0;
+        this.panY = 0;
+        this.isPanning = false;
+        this.panStartPoint = null;
         
         this.init();
     }
@@ -46,12 +60,18 @@ class SVGVectorEditor {
         document.getElementById('clearCanvas').addEventListener('click', this.clearCanvas.bind(this));
         document.getElementById('downloadSVG').addEventListener('click', this.downloadSVG.bind(this));
         
+        // Zoom controls
+        document.getElementById('zoomIn').addEventListener('click', () => this.zoomIn());
+        document.getElementById('zoomOut').addEventListener('click', () => this.zoomOut());
+        document.getElementById('resetZoom').addEventListener('click', () => this.resetZoom());
+        
+        // Mouse wheel zoom
+        this.svg.addEventListener('wheel', this.handleWheel.bind(this));
+        
         // Coordinate display
         this.svg.addEventListener('mousemove', (e) => {
-            const rect = this.svg.getBoundingClientRect();
-            const x = Math.round(e.clientX - rect.left);
-            const y = Math.round(e.clientY - rect.top);
-            document.getElementById('coordinates').textContent = `X: ${x}, Y: ${y}`;
+            const pos = this.getMousePosition(e);
+            document.getElementById('coordinates').textContent = `X: ${Math.round(pos.x)}, Y: ${Math.round(pos.y)}`;
         });
     }
 
@@ -123,6 +143,7 @@ class SVGVectorEditor {
         const cursors = {
             select: 'default',
             anchor: 'crosshair',
+            hand: 'grab',
             line: 'crosshair',
             rectangle: 'crosshair',
             circle: 'crosshair',
@@ -146,9 +167,16 @@ class SVGVectorEditor {
 
     getMousePosition(event) {
         const rect = this.svg.getBoundingClientRect();
+        const rawX = event.clientX - rect.left;
+        const rawY = event.clientY - rect.top;
+        
+        // Transform coordinates to account for zoom and pan
+        const transformedX = (rawX - this.panX) / this.zoom;
+        const transformedY = (rawY - this.panY) / this.zoom;
+        
         return {
-            x: event.clientX - rect.left,
-            y: event.clientY - rect.top
+            x: transformedX,
+            y: transformedY
         };
     }
 
@@ -173,6 +201,15 @@ class SVGVectorEditor {
             return;
         }
 
+        // Handle control point dragging
+        if (this.currentTool === 'anchor' && this.selectedControlPoint && 
+            (event.target.classList.contains('control-point') || this.isDraggingControl)) {
+            if (!this.isDraggingControl) {
+                this.startControlPointDragging(pos);
+            }
+            return;
+        }
+
         switch (this.currentTool) {
             case 'select':
                 // Don't start selection if we clicked on an element
@@ -182,6 +219,9 @@ class SVGVectorEditor {
                 break;
             case 'anchor':
                 this.handleAnchorToolClick(event);
+                break;
+            case 'hand':
+                this.startPanning(pos);
                 break;
             case 'line':
                 this.startDrawingLine(pos);
@@ -193,8 +233,8 @@ class SVGVectorEditor {
                 this.startDrawingCircle(pos);
                 break;
             case 'path':
-                console.log('Path tool triggered, adding point at:', pos);
-                this.addPathPoint(pos);
+                console.log('Path tool triggered, starting path interaction at:', pos);
+                this.startPathInteraction(pos);
                 break;
         }
     }
@@ -219,6 +259,18 @@ class SVGVectorEditor {
             this.updateAnchorPointDragging(pos);
             return;
         }
+
+        // Handle control point dragging
+        if (this.isDraggingControl && this.selectedControlPoint) {
+            this.updateControlPointDragging(pos);
+            return;
+        }
+
+        // Handle panning
+        if (this.isPanning) {
+            this.updatePanning(pos);
+            return;
+        }
         
         if (!this.isDrawing) return;
 
@@ -236,7 +288,7 @@ class SVGVectorEditor {
                 this.updateDrawingCircle(pos);
                 break;
             case 'path':
-                this.updatePathPreview(pos);
+                this.updatePathInteraction(pos);
                 break;
         }
     }
@@ -253,6 +305,18 @@ class SVGVectorEditor {
         // Handle anchor point dragging
         if (this.isDraggingAnchor) {
             this.finishAnchorPointDragging(pos);
+            return;
+        }
+
+        // Handle control point dragging
+        if (this.isDraggingControl) {
+            this.finishControlPointDragging(pos);
+            return;
+        }
+
+        // Handle panning
+        if (this.isPanning) {
+            this.finishPanning(pos);
             return;
         }
         
@@ -272,6 +336,9 @@ class SVGVectorEditor {
                 break;
             case 'circle':
                 this.finishDrawingCircle(pos);
+                break;
+            case 'path':
+                this.finishPathInteraction(pos);
                 break;
         }
     }
@@ -402,9 +469,17 @@ class SVGVectorEditor {
         this.anchorPoints.forEach(point => point.remove());
         this.anchorPoints = [];
         
+        this.controlPoints.forEach(point => point.remove());
+        this.controlPoints = [];
+        
         // Clear anchor point selection
         if (this.selectedAnchorPoint) {
             this.selectedAnchorPoint = null;
+        }
+        
+        // Clear control point selection
+        if (this.selectedControlPoint) {
+            this.selectedControlPoint = null;
         }
     }
 
@@ -424,14 +499,28 @@ class SVGVectorEditor {
 
     showPathAnchorPoints(path) {
         const d = path.getAttribute('d');
-        const commands = d.match(/[ML]\s*([^ML]+)/g) || [];
+        const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
+        
+        let anchorIndex = 0;
         
         commands.forEach((cmd, index) => {
-            const match = cmd.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
-            if (match) {
-                const x = parseFloat(match[1]);
-                const y = parseFloat(match[2]);
-                this.createAnchorPoint(x, y, index, 'path');
+            if (cmd.startsWith('M') || cmd.startsWith('L')) {
+                const match = cmd.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
+                if (match) {
+                    const x = parseFloat(match[1]);
+                    const y = parseFloat(match[2]);
+                    this.createAnchorPoint(x, y, anchorIndex, 'path');
+                    anchorIndex++;
+                }
+            } else if (cmd.startsWith('C')) {
+                const match = cmd.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                if (match) {
+                    // Create anchor point for the end point of the curve
+                    const x = parseFloat(match[5]);
+                    const y = parseFloat(match[6]);
+                    this.createAnchorPoint(x, y, anchorIndex, 'path');
+                    anchorIndex++;
+                }
             }
         });
     }
@@ -556,16 +645,44 @@ class SVGVectorEditor {
     showPathAnchorPointsForEditing(path) {
         const d = path.getAttribute('d');
         console.log('Path data:', d);
-        const commands = d.match(/[ML]\s*([^ML]+)/g) || [];
+        const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
         console.log('Path commands:', commands);
         
+        let anchorIndex = 0;
+        let curveSegmentIndex = 0;
+        
         commands.forEach((cmd, index) => {
-            const match = cmd.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
-            if (match) {
-                const x = parseFloat(match[1]);
-                const y = parseFloat(match[2]);
-                console.log('Creating path anchor point:', { x, y, index });
-                this.createSelectableAnchorPoint(x, y, index, 'path', path);
+            if (cmd.startsWith('M') || cmd.startsWith('L')) {
+                const match = cmd.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
+                if (match) {
+                    const x = parseFloat(match[1]);
+                    const y = parseFloat(match[2]);
+                    console.log('Creating path anchor point:', { x, y, anchorIndex });
+                    this.createSelectableAnchorPoint(x, y, anchorIndex, 'path', path);
+                    anchorIndex++;
+                }
+            } else if (cmd.startsWith('C')) {
+                const match = cmd.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                if (match) {
+                    // Create anchor point for the end point of the curve
+                    const endX = parseFloat(match[5]);
+                    const endY = parseFloat(match[6]);
+                    console.log('Creating curve end anchor point:', { x: endX, y: endY, anchorIndex });
+                    this.createSelectableAnchorPoint(endX, endY, anchorIndex, 'path', path);
+                    anchorIndex++;
+                    
+                    // Create control points
+                    const control1X = parseFloat(match[1]);
+                    const control1Y = parseFloat(match[2]);
+                    const control2X = parseFloat(match[3]);
+                    const control2Y = parseFloat(match[4]);
+                    
+                    console.log('Creating control points for curve segment:', curveSegmentIndex);
+                    this.createSelectableControlPoint(control1X, control1Y, curveSegmentIndex, 1, path);
+                    this.createSelectableControlPoint(control2X, control2Y, curveSegmentIndex, 2, path);
+                    
+                    curveSegmentIndex++;
+                }
             }
         });
     }
@@ -597,9 +714,37 @@ class SVGVectorEditor {
         console.log('Created anchor point:', { x, y, index, type });
     }
 
+    createSelectableControlPoint(x, y, segmentIndex, controlIndex, element) {
+        const point = document.createElement('div');
+        point.className = 'control-point selectable';
+        point.style.left = x + 'px';
+        point.style.top = y + 'px';
+        point.style.position = 'absolute';
+        point.style.pointerEvents = 'auto';
+        point.style.zIndex = '1000';
+        point.dataset.segmentIndex = segmentIndex;
+        point.dataset.controlIndex = controlIndex;
+        point.dataset.elementId = this.elements.indexOf(element);
+        
+        point.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+            console.log('Control point clicked:', { x, y, segmentIndex, controlIndex });
+            this.selectControlPoint(point, x, y, segmentIndex, controlIndex, element);
+            // Start dragging immediately when control point is clicked
+            if (this.currentTool === 'anchor') {
+                this.startControlPointDragging(this.getMousePosition(e));
+            }
+        });
+        
+        this.overlay.appendChild(point);
+        this.controlPoints.push(point);
+        console.log('Created control point:', { x, y, segmentIndex, controlIndex });
+    }
+
     selectAnchorPoint(point, x, y, index, type, element) {
         // Clear previous selection
         this.anchorPoints.forEach(p => p.classList.remove('selected'));
+        this.controlPoints.forEach(p => p.classList.remove('selected'));
         
         // Get the current position of the anchor point element
         const currentX = parseFloat(point.style.left);
@@ -608,8 +753,26 @@ class SVGVectorEditor {
         // Select this point
         point.classList.add('selected');
         this.selectedAnchorPoint = { point, x: currentX, y: currentY, index, type, element };
+        this.selectedControlPoint = null;
         
         console.log('Anchor point selected:', { index, type, element: element.tagName, currentX, currentY });
+    }
+
+    selectControlPoint(point, x, y, segmentIndex, controlIndex, element) {
+        // Clear previous selection
+        this.anchorPoints.forEach(p => p.classList.remove('selected'));
+        this.controlPoints.forEach(p => p.classList.remove('selected'));
+        
+        // Get the current position of the control point element
+        const currentX = parseFloat(point.style.left);
+        const currentY = parseFloat(point.style.top);
+        
+        // Select this point
+        point.classList.add('selected');
+        this.selectedControlPoint = { point, x: currentX, y: currentY, segmentIndex, controlIndex, element };
+        this.selectedAnchorPoint = null;
+        
+        console.log('Control point selected:', { segmentIndex, controlIndex, element: element.tagName, currentX, currentY });
     }
 
     startAnchorPointDragging(pos) {
@@ -743,12 +906,62 @@ class SVGVectorEditor {
 
     updatePathGeometry(path, pointIndex, newX, newY) {
         const d = path.getAttribute('d');
-        const commands = d.match(/[ML]\s*([^ML]+)/g) || [];
+        const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
         
-        if (commands[pointIndex]) {
-            const newCommand = commands[pointIndex].replace(/[ML]\s*[-\d.]+[,\s]+[-\d.]+/, `${commands[pointIndex][0]} ${newX} ${newY}`);
-            commands[pointIndex] = newCommand;
+        // Find the command that corresponds to this anchor point
+        let commandIndex = -1;
+        let currentAnchorIndex = 0;
+        let curveSegmentIndex = -1;
+        
+        for (let i = 0; i < commands.length; i++) {
+            if (commands[i].startsWith('M') || commands[i].startsWith('L')) {
+                if (currentAnchorIndex === pointIndex) {
+                    commandIndex = i;
+                    break;
+                }
+                currentAnchorIndex++;
+            } else if (commands[i].startsWith('C')) {
+                // For curves, the end point is the anchor point
+                if (currentAnchorIndex === pointIndex) {
+                    commandIndex = i;
+                    curveSegmentIndex = i;
+                    break;
+                }
+                currentAnchorIndex++;
+            }
+        }
+        
+        if (commandIndex !== -1) {
+            const command = commands[commandIndex];
+            if (command.startsWith('M') || command.startsWith('L')) {
+                const newCommand = command.replace(/[ML]\s*[-\d.]+[,\s]+[-\d.]+/, `${command[0]} ${newX} ${newY}`);
+                commands[commandIndex] = newCommand;
+            } else if (command.startsWith('C')) {
+                // For curves, update the end point (last two coordinates)
+                const parts = command.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                if (parts) {
+                    // Calculate the offset from old position to new position
+                    const oldEndX = parseFloat(parts[5]);
+                    const oldEndY = parseFloat(parts[6]);
+                    const offsetX = newX - oldEndX;
+                    const offsetY = newY - oldEndY;
+                    
+                    // Update control points proportionally
+                    const newControl1X = parseFloat(parts[1]) + offsetX;
+                    const newControl1Y = parseFloat(parts[2]) + offsetY;
+                    const newControl2X = parseFloat(parts[3]) + offsetX;
+                    const newControl2Y = parseFloat(parts[4]) + offsetY;
+                    
+                    const newCommand = `C ${newControl1X} ${newControl1Y} ${newControl2X} ${newControl2Y} ${newX} ${newY}`;
+                    commands[commandIndex] = newCommand;
+                }
+            }
             path.setAttribute('d', commands.join(' '));
+            
+            // Update control point positions if this was a curve
+            if (curveSegmentIndex !== -1) {
+                this.updateControlPointsForPath(path);
+            }
         }
     }
 
@@ -757,13 +970,66 @@ class SVGVectorEditor {
         // This method can be used for additional anchor tool functionality
     }
 
+    updateControlPointsForPath(path) {
+        // Update the positions of control points for this path based on current geometry
+        const elementId = this.elements.indexOf(path);
+        
+        this.controlPoints.forEach(point => {
+            if (point.dataset.elementId == elementId) {
+                const segmentIndex = parseInt(point.dataset.segmentIndex);
+                const controlIndex = parseInt(point.dataset.controlIndex);
+                
+                // Get the current control point position from the path data
+                const d = path.getAttribute('d');
+                const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
+                
+                let curveCommandIndex = -1;
+                let currentSegment = 0;
+                
+                for (let i = 0; i < commands.length; i++) {
+                    if (commands[i].startsWith('C')) {
+                        if (currentSegment === segmentIndex) {
+                            curveCommandIndex = i;
+                            break;
+                        }
+                        currentSegment++;
+                    }
+                }
+                
+                if (curveCommandIndex !== -1) {
+                    const curveCommand = commands[curveCommandIndex];
+                    const parts = curveCommand.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                    
+                    if (parts) {
+                        let newX, newY;
+                        if (controlIndex === 1) {
+                            newX = parseFloat(parts[1]);
+                            newY = parseFloat(parts[2]);
+                        } else {
+                            newX = parseFloat(parts[3]);
+                            newY = parseFloat(parts[4]);
+                        }
+                        
+                        point.style.left = newX + 'px';
+                        point.style.top = newY + 'px';
+                    }
+                }
+            }
+        });
+    }
+
     addAnchorDragListeners() {
-        // Add global mouse event listeners for anchor dragging
+        // Add global mouse event listeners for anchor and control point dragging
         this.anchorMouseMoveHandler = (e) => {
             if (this.isDraggingAnchor && this.selectedAnchorPoint) {
                 const pos = this.getMousePosition(e);
                 console.log('Global anchor mousemove:', pos);
                 this.updateAnchorPointDragging(pos);
+            }
+            if (this.isDraggingControl && this.selectedControlPoint) {
+                const pos = this.getMousePosition(e);
+                console.log('Global control mousemove:', pos);
+                this.updateControlPointDragging(pos);
             }
         };
 
@@ -772,6 +1038,11 @@ class SVGVectorEditor {
                 const pos = this.getMousePosition(e);
                 console.log('Global anchor mouseup:', pos);
                 this.finishAnchorPointDragging(pos);
+            }
+            if (this.isDraggingControl) {
+                const pos = this.getMousePosition(e);
+                console.log('Global control mouseup:', pos);
+                this.finishControlPointDragging(pos);
             }
         };
 
@@ -789,6 +1060,90 @@ class SVGVectorEditor {
             document.removeEventListener('mouseup', this.anchorMouseUpHandler);
             this.anchorMouseUpHandler = null;
         }
+        
+        // Remove any control point handles
+        this.removeControlPointHandles();
+    }
+
+    // Zoom and Pan Methods
+    handleWheel(event) {
+        event.preventDefault();
+        
+        const delta = event.deltaY > 0 ? 0.9 : 1.1;
+        const rect = this.svg.getBoundingClientRect();
+        const mouseX = event.clientX - rect.left;
+        const mouseY = event.clientY - rect.top;
+        
+        this.zoomAtPoint(delta, mouseX, mouseY);
+    }
+
+    zoomIn() {
+        this.zoomAtPoint(1.2, this.svg.clientWidth / 2, this.svg.clientHeight / 2);
+    }
+
+    zoomOut() {
+        this.zoomAtPoint(0.8, this.svg.clientWidth / 2, this.svg.clientHeight / 2);
+    }
+
+    resetZoom() {
+        this.zoom = 1;
+        this.panX = 0;
+        this.panY = 0;
+        this.updateTransform();
+        this.updateZoomLevel();
+    }
+
+    zoomAtPoint(factor, centerX, centerY) {
+        const newZoom = Math.max(0.1, Math.min(10, this.zoom * factor));
+        
+        // Calculate the zoom center in transformed coordinates
+        const transformedX = (centerX - this.panX) / this.zoom;
+        const transformedY = (centerY - this.panY) / this.zoom;
+        
+        // Update pan to keep the zoom center point fixed
+        this.panX = centerX - transformedX * newZoom;
+        this.panY = centerY - transformedY * newZoom;
+        
+        this.zoom = newZoom;
+        this.updateTransform();
+        this.updateZoomLevel();
+    }
+
+    updateTransform() {
+        const transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
+        this.svg.style.transform = transform;
+        this.svg.style.transformOrigin = '0 0';
+    }
+
+    updateZoomLevel() {
+        document.getElementById('zoomLevel').textContent = Math.round(this.zoom * 100) + '%';
+    }
+
+    startPanning(pos) {
+        this.isPanning = true;
+        this.panStartPoint = pos;
+        this.svg.style.cursor = 'grabbing';
+        console.log('Starting pan at:', pos);
+    }
+
+    updatePanning(pos) {
+        if (!this.panStartPoint) return;
+        
+        const deltaX = pos.x - this.panStartPoint.x;
+        const deltaY = pos.y - this.panStartPoint.y;
+        
+        this.panX += deltaX;
+        this.panY += deltaY;
+        
+        this.panStartPoint = pos;
+        this.updateTransform();
+    }
+
+    finishPanning(pos) {
+        this.isPanning = false;
+        this.panStartPoint = null;
+        this.svg.style.cursor = 'grab';
+        console.log('Finished panning');
     }
 
     updateAnchorPointsForElement(element) {
@@ -841,12 +1196,44 @@ class SVGVectorEditor {
                     case 'path':
                         // For paths, we need to parse the path data
                         const d = element.getAttribute('d');
-                        const commands = d.match(/[ML]\s*([^ML]+)/g) || [];
-                        if (commands[index]) {
-                            const match = commands[index].match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
-                            if (match) {
-                                newX = parseFloat(match[1]);
-                                newY = parseFloat(match[2]);
+                        const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
+                        
+                        // Find the command that corresponds to this anchor point
+                        let commandIndex = -1;
+                        let currentAnchorIndex = 0;
+                        
+                        for (let i = 0; i < commands.length; i++) {
+                            if (commands[i].startsWith('M') || commands[i].startsWith('L')) {
+                                if (currentAnchorIndex === index) {
+                                    commandIndex = i;
+                                    break;
+                                }
+                                currentAnchorIndex++;
+                            } else if (commands[i].startsWith('C')) {
+                                // For curves, the end point is the anchor point
+                                if (currentAnchorIndex === index) {
+                                    commandIndex = i;
+                                    break;
+                                }
+                                currentAnchorIndex++;
+                            }
+                        }
+                        
+                        if (commandIndex !== -1) {
+                            const command = commands[commandIndex];
+                            if (command.startsWith('M') || command.startsWith('L')) {
+                                const match = command.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
+                                if (match) {
+                                    newX = parseFloat(match[1]);
+                                    newY = parseFloat(match[2]);
+                                }
+                            } else if (command.startsWith('C')) {
+                                // For curves, get the end point (last two coordinates)
+                                const parts = command.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                                if (parts) {
+                                    newX = parseFloat(parts[5]);
+                                    newY = parseFloat(parts[6]);
+                                }
                             }
                         }
                         break;
@@ -858,6 +1245,11 @@ class SVGVectorEditor {
                 }
             }
         });
+        
+        // Also update control points for paths
+        if (tagName === 'path') {
+            this.updateControlPointsForPath(element);
+        }
     }
 
     startResize(handleIndex, event) {
@@ -965,12 +1357,15 @@ class SVGVectorEditor {
 
     movePath(path, newX, newY) {
         const d = path.getAttribute('d');
-        const commands = d.match(/[ML]\s*([^ML]+)/g) || [];
+        const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
         
         if (commands.length === 0) return;
         
         // Get the first point to calculate offset
-        const firstPoint = commands[0].match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
+        let firstPoint = null;
+        if (commands[0].startsWith('M')) {
+            firstPoint = commands[0].match(/M\s*([-\d.]+)\s+([-\d.]+)/);
+        }
         if (!firstPoint) return;
         
         const offsetX = newX - parseFloat(firstPoint[1]);
@@ -978,11 +1373,24 @@ class SVGVectorEditor {
         
         // Move all points by the offset
         const newCommands = commands.map(cmd => {
-            const match = cmd.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
-            if (match) {
-                const x = parseFloat(match[1]) + offsetX;
-                const y = parseFloat(match[2]) + offsetY;
-                return cmd.replace(/[ML]\s*[-\d.]+[,\s]+[-\d.]+/, `${cmd[0]} ${x} ${y}`);
+            if (cmd.startsWith('M') || cmd.startsWith('L')) {
+                const match = cmd.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
+                if (match) {
+                    const x = parseFloat(match[1]) + offsetX;
+                    const y = parseFloat(match[2]) + offsetY;
+                    return cmd.replace(/[ML]\s*[-\d.]+[,\s]+[-\d.]+/, `${cmd[0]} ${x} ${y}`);
+                }
+            } else if (cmd.startsWith('C')) {
+                const parts = cmd.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                if (parts) {
+                    const x1 = parseFloat(parts[1]) + offsetX;
+                    const y1 = parseFloat(parts[2]) + offsetY;
+                    const x2 = parseFloat(parts[3]) + offsetX;
+                    const y2 = parseFloat(parts[4]) + offsetY;
+                    const x3 = parseFloat(parts[5]) + offsetX;
+                    const y3 = parseFloat(parts[6]) + offsetY;
+                    return `C ${x1} ${y1} ${x2} ${y2} ${x3} ${y3}`;
+                }
             }
             return cmd;
         });
@@ -1102,6 +1510,18 @@ class SVGVectorEditor {
     startNewPath(pos) {
         this.currentPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         this.pathPoints = [pos];
+        this.pathSegments = [];
+        
+        // Create initial segment
+        const initialSegment = {
+            type: 'line',
+            startPoint: pos,
+            endPoint: pos,
+            control1: null,
+            control2: null
+        };
+        this.pathSegments.push(initialSegment);
+        
         this.currentPath.setAttribute('d', `M ${pos.x} ${pos.y}`);
         this.applyCurrentProperties(this.currentPath);
         this.svg.appendChild(this.currentPath);
@@ -1110,17 +1530,28 @@ class SVGVectorEditor {
 
     addPointToPath(pos) {
         this.pathPoints.push(pos);
-        const pathData = this.pathPoints.map((point, index) => 
-            index === 0 ? `M ${point.x} ${point.y}` : `L ${point.x} ${point.y}`
-        ).join(' ');
-        this.currentPath.setAttribute('d', pathData);
+        
+        // Create a straight line segment
+        const startPoint = this.pathSegments.length > 0 ? 
+            this.pathSegments[this.pathSegments.length - 1].endPoint : 
+            this.pathSegments[0].startPoint;
+        
+        const segment = {
+            type: 'line',
+            startPoint: startPoint,
+            endPoint: pos,
+            control1: null,
+            control2: null
+        };
+        
+        this.pathSegments.push(segment);
+        this.updatePathFromSegments();
     }
 
     updatePathPreview(pos) {
-        if (this.currentPath && this.pathPoints.length > 0) {
-            const pathData = this.pathPoints.map((point, index) => 
-                index === 0 ? `M ${point.x} ${point.y}` : `L ${point.x} ${point.y}`
-            ).join(' ') + ` L ${pos.x} ${pos.y}`;
+        if (this.currentPath && this.pathSegments.length > 0) {
+            let pathData = this.buildPathDataFromSegments();
+            pathData += ` L ${pos.x} ${pos.y}`;
             this.currentPath.setAttribute('d', pathData);
         }
     }
@@ -1128,6 +1559,9 @@ class SVGVectorEditor {
     finishPath() {
         console.log('finishPath called, currentPath:', this.currentPath);
         if (this.currentPath) {
+            // Remove any preview lines
+            this.removeControlPointPreview();
+            
             // Ensure the path is properly added to elements array
             this.elements.push(this.currentPath);
             console.log('Path added to elements. Total elements:', this.elements.length);
@@ -1135,10 +1569,379 @@ class SVGVectorEditor {
             console.log('Path data:', this.currentPath.getAttribute('d'));
             this.currentPath = null;
             this.pathPoints = [];
+            this.pathSegments = [];
             this.updateLayersList();
             this.updateStatus('Path completed');
         } else {
             console.log('No currentPath to finish!');
+        }
+    }
+
+    // Enhanced Path Tool Methods for Curved Paths
+    startPathInteraction(pos) {
+        console.log('Starting path interaction at:', pos);
+        if (!this.currentPath) {
+            this.startNewPath(pos);
+            this.updateStatus('Path started. Click to add points, drag to create curves. Double-click or press Enter to finish.');
+        } else {
+            // Start a potential curve creation
+            this.startPotentialCurve(pos);
+        }
+    }
+
+    startPotentialCurve(pos) {
+        // Store the position where we started dragging
+        this.curveStartPoint = pos;
+        this.isCreatingCurve = true;
+        this.updateStatus('Drag to create curve, release to finish');
+        console.log('Starting potential curve at:', pos);
+    }
+
+    updatePathInteraction(pos) {
+        if (this.isCreatingCurve && this.curveStartPoint) {
+            // Show preview of the curve being created
+            this.updateCurvePreview(pos);
+        } else if (this.currentPath && this.pathSegments.length > 0) {
+            // Show preview of next segment
+            this.updatePathPreview(pos);
+        }
+        
+        // Update cursor to indicate curve creation
+        if (this.isCreatingCurve) {
+            this.svg.style.cursor = 'crosshair';
+        }
+    }
+
+    updateCurvePreview(pos) {
+        if (!this.currentPath || !this.curveStartPoint) return;
+        
+        // Calculate control points for the curve
+        const startPoint = this.pathSegments.length > 0 ? 
+            this.pathSegments[this.pathSegments.length - 1].endPoint : 
+            this.pathSegments[0].startPoint;
+        
+        // Create temporary control points
+        const control1 = {
+            x: startPoint.x + (this.curveStartPoint.x - startPoint.x) * 0.3,
+            y: startPoint.y + (this.curveStartPoint.y - startPoint.y) * 0.3
+        };
+        const control2 = {
+            x: this.curveStartPoint.x + (pos.x - this.curveStartPoint.x) * 0.7,
+            y: this.curveStartPoint.y + (pos.y - this.curveStartPoint.y) * 0.7
+        };
+        
+        // Build path data with the curve preview
+        let pathData = this.buildPathDataFromSegments();
+        pathData += ` C ${control1.x} ${control1.y} ${control2.x} ${control2.y} ${pos.x} ${pos.y}`;
+        
+        this.currentPath.setAttribute('d', pathData);
+        
+        // Show control point preview lines
+        this.showControlPointPreview(startPoint, control1, control2, pos);
+    }
+
+    showControlPointPreview(startPoint, control1, control2, endPoint) {
+        // Remove existing preview lines
+        this.removeControlPointPreview();
+        
+        // Create preview lines for control points
+        this.controlPreviewLines = [];
+        
+        // Line from start to control1
+        const line1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line1.setAttribute('x1', startPoint.x);
+        line1.setAttribute('y1', startPoint.y);
+        line1.setAttribute('x2', control1.x);
+        line1.setAttribute('y2', control1.y);
+        line1.setAttribute('stroke', '#f39c12');
+        line1.setAttribute('stroke-width', '1');
+        line1.setAttribute('stroke-dasharray', '5,5');
+        line1.setAttribute('opacity', '0.6');
+        this.svg.appendChild(line1);
+        this.controlPreviewLines.push(line1);
+        
+        // Line from control2 to end
+        const line2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line2.setAttribute('x1', control2.x);
+        line2.setAttribute('y1', control2.y);
+        line2.setAttribute('x2', endPoint.x);
+        line2.setAttribute('y2', endPoint.y);
+        line2.setAttribute('stroke', '#f39c12');
+        line2.setAttribute('stroke-width', '1');
+        line2.setAttribute('stroke-dasharray', '5,5');
+        line2.setAttribute('opacity', '0.6');
+        this.svg.appendChild(line2);
+        this.controlPreviewLines.push(line2);
+    }
+
+    removeControlPointPreview() {
+        if (this.controlPreviewLines) {
+            this.controlPreviewLines.forEach(line => line.remove());
+            this.controlPreviewLines = [];
+        }
+    }
+
+    finishPathInteraction(pos) {
+        // Remove control point preview
+        this.removeControlPointPreview();
+        
+        if (this.isCreatingCurve && this.curveStartPoint) {
+            // Create a curved segment
+            this.createCurvedSegment(pos);
+            this.isCreatingCurve = false;
+            this.curveStartPoint = null;
+        } else {
+            // Create a straight segment
+            this.createStraightSegment(pos);
+        }
+        
+        this.updateStatus(`Path: ${this.pathSegments.length} segments. Double-click or press Enter to finish.`);
+    }
+
+    createStraightSegment(endPoint) {
+        const startPoint = this.pathSegments.length > 0 ? 
+            this.pathSegments[this.pathSegments.length - 1].endPoint : 
+            this.pathSegments[0].startPoint;
+        
+        const segment = {
+            type: 'line',
+            startPoint: startPoint,
+            endPoint: endPoint,
+            control1: null,
+            control2: null
+        };
+        
+        this.pathSegments.push(segment);
+        this.updatePathFromSegments();
+    }
+
+    createCurvedSegment(endPoint) {
+        const startPoint = this.pathSegments.length > 0 ? 
+            this.pathSegments[this.pathSegments.length - 1].endPoint : 
+            this.pathSegments[0].startPoint;
+        
+        // Calculate control points based on drag distance and direction
+        const dragVector = {
+            x: endPoint.x - this.curveStartPoint.x,
+            y: endPoint.y - this.curveStartPoint.y
+        };
+        
+        const control1 = {
+            x: startPoint.x + (this.curveStartPoint.x - startPoint.x) * 0.3,
+            y: startPoint.y + (this.curveStartPoint.y - startPoint.y) * 0.3
+        };
+        
+        const control2 = {
+            x: this.curveStartPoint.x + dragVector.x * 0.7,
+            y: this.curveStartPoint.y + dragVector.y * 0.7
+        };
+        
+        const segment = {
+            type: 'curve',
+            startPoint: startPoint,
+            endPoint: endPoint,
+            control1: control1,
+            control2: control2
+        };
+        
+        this.pathSegments.push(segment);
+        this.updatePathFromSegments();
+    }
+
+    updatePathFromSegments() {
+        if (!this.currentPath) return;
+        
+        const pathData = this.buildPathDataFromSegments();
+        this.currentPath.setAttribute('d', pathData);
+        console.log('Updated path data:', pathData);
+    }
+
+    buildPathDataFromSegments() {
+        if (this.pathSegments.length === 0) return '';
+        
+        let pathData = '';
+        
+        this.pathSegments.forEach((segment, index) => {
+            if (index === 0) {
+                // First segment - start with move command
+                pathData += `M ${segment.startPoint.x} ${segment.startPoint.y}`;
+            }
+            
+            if (segment.type === 'line') {
+                pathData += ` L ${segment.endPoint.x} ${segment.endPoint.y}`;
+            } else if (segment.type === 'curve') {
+                pathData += ` C ${segment.control1.x} ${segment.control1.y} ${segment.control2.x} ${segment.control2.y} ${segment.endPoint.x} ${segment.endPoint.y}`;
+            }
+        });
+        
+        return pathData;
+    }
+
+    // Control Point Methods
+    startControlPointDragging(pos) {
+        this.isDraggingControl = true;
+        
+        const control = this.selectedControlPoint;
+        this.controlDragOffset = {
+            x: pos.x - control.x,
+            y: pos.y - control.y
+        };
+        
+        console.log('Starting control point drag:', control);
+    }
+
+    updateControlPointDragging(pos) {
+        if (!this.selectedControlPoint) return;
+        
+        const newX = pos.x - this.controlDragOffset.x;
+        const newY = pos.y - this.controlDragOffset.y;
+        
+        // Update the control point position
+        this.selectedControlPoint.point.style.left = newX + 'px';
+        this.selectedControlPoint.point.style.top = newY + 'px';
+        this.selectedControlPoint.x = newX;
+        this.selectedControlPoint.y = newY;
+        
+        // Update the path geometry
+        this.updatePathGeometryForControlPoint(newX, newY);
+        
+        // Show visual feedback
+        this.showControlPointHandles();
+    }
+
+    finishControlPointDragging(pos) {
+        this.isDraggingControl = false;
+        this.controlDragOffset = { x: 0, y: 0 };
+        this.removeControlPointHandles();
+        console.log('Finished control point drag');
+    }
+
+    updatePathGeometryForControlPoint(newX, newY) {
+        const control = this.selectedControlPoint;
+        const element = control.element;
+        const segmentIndex = control.segmentIndex;
+        const controlIndex = control.controlIndex; // 1 or 2
+        
+        // Update the path segment
+        if (element && element.tagName.toLowerCase() === 'path') {
+            // Parse the path data and update the specific control point
+            this.updatePathControlPoint(element, segmentIndex, controlIndex, newX, newY);
+        }
+    }
+
+    updatePathControlPoint(path, segmentIndex, controlIndex, newX, newY) {
+        const d = path.getAttribute('d');
+        const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
+        
+        // Find the curve command for this segment
+        let curveCommandIndex = -1;
+        let currentSegment = 0;
+        
+        for (let i = 0; i < commands.length; i++) {
+            if (commands[i].startsWith('C')) {
+                if (currentSegment === segmentIndex) {
+                    curveCommandIndex = i;
+                    break;
+                }
+                currentSegment++;
+            }
+        }
+        
+        if (curveCommandIndex !== -1) {
+            const curveCommand = commands[curveCommandIndex];
+            const parts = curveCommand.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+            
+            if (parts) {
+                let newCommand = 'C';
+                if (controlIndex === 1) {
+                    // Update first control point
+                    newCommand += ` ${newX} ${newY} ${parts[3]} ${parts[4]} ${parts[5]} ${parts[6]}`;
+                } else {
+                    // Update second control point
+                    newCommand += ` ${parts[1]} ${parts[2]} ${newX} ${newY} ${parts[5]} ${parts[6]}`;
+                }
+                
+                commands[curveCommandIndex] = newCommand;
+                path.setAttribute('d', commands.join(' '));
+            }
+        }
+    }
+
+    showControlPointHandles() {
+        // Remove existing control point handles
+        this.removeControlPointHandles();
+        
+        if (!this.selectedControlPoint) return;
+        
+        const control = this.selectedControlPoint;
+        const element = control.element;
+        
+        if (element && element.tagName.toLowerCase() === 'path') {
+            const d = element.getAttribute('d');
+            const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
+            
+            // Find the curve command for this segment
+            let curveCommandIndex = -1;
+            let currentSegment = 0;
+            
+            for (let i = 0; i < commands.length; i++) {
+                if (commands[i].startsWith('C')) {
+                    if (currentSegment === control.segmentIndex) {
+                        curveCommandIndex = i;
+                        break;
+                    }
+                    currentSegment++;
+                }
+            }
+            
+            if (curveCommandIndex !== -1) {
+                const curveCommand = commands[curveCommandIndex];
+                const parts = curveCommand.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                
+                if (parts) {
+                    // Get the anchor points for this curve
+                    const startX = parseFloat(parts[5]) - (parseFloat(parts[3]) - parseFloat(parts[1]));
+                    const startY = parseFloat(parts[6]) - (parseFloat(parts[4]) - parseFloat(parts[2]));
+                    const endX = parseFloat(parts[5]);
+                    const endY = parseFloat(parts[6]);
+                    
+                    // Create handle lines from anchor points to control points
+                    this.controlHandles = [];
+                    
+                    // Line from start anchor to control1
+                    const handle1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    handle1.setAttribute('x1', startX);
+                    handle1.setAttribute('y1', startY);
+                    handle1.setAttribute('x2', parseFloat(parts[1]));
+                    handle1.setAttribute('y2', parseFloat(parts[2]));
+                    handle1.setAttribute('stroke', '#f39c12');
+                    handle1.setAttribute('stroke-width', '1');
+                    handle1.setAttribute('stroke-dasharray', '3,3');
+                    handle1.setAttribute('opacity', '0.8');
+                    this.svg.appendChild(handle1);
+                    this.controlHandles.push(handle1);
+                    
+                    // Line from control2 to end anchor
+                    const handle2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    handle2.setAttribute('x1', parseFloat(parts[3]));
+                    handle2.setAttribute('y1', parseFloat(parts[4]));
+                    handle2.setAttribute('x2', endX);
+                    handle2.setAttribute('y2', endY);
+                    handle2.setAttribute('stroke', '#f39c12');
+                    handle2.setAttribute('stroke-width', '1');
+                    handle2.setAttribute('stroke-dasharray', '3,3');
+                    handle2.setAttribute('opacity', '0.8');
+                    this.svg.appendChild(handle2);
+                    this.controlHandles.push(handle2);
+                }
+            }
+        }
+    }
+
+    removeControlPointHandles() {
+        if (this.controlHandles) {
+            this.controlHandles.forEach(handle => handle.remove());
+            this.controlHandles = [];
         }
     }
 
@@ -1247,6 +2050,8 @@ class SVGVectorEditor {
             console.log('Auto-finalizing path due to cancel operation');
             this.finishPath();
         }
+        // Remove any preview lines
+        this.removeControlPointPreview();
         this.isDrawing = false;
         this.clearSelection();
     }

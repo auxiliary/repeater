@@ -2,6 +2,7 @@ import { DrawingTool, LineTool, RectangleTool, CircleTool, PathTool } from './dr
 import {Shape, LineShape, RectangleShape, CircleShape, PathShape} from './shapes.js';
 import {ZoomPanManager} from './zoom-pan-manager.js';
 import {EventBus} from './event-bus.js';
+import {PropertiesManager} from './properties-manager.js';
 
 class SVGVectorEditor {
     constructor() {
@@ -37,6 +38,9 @@ class SVGVectorEditor {
         // Initialize zoom and pan manager
         this.zoomPanManager = new ZoomPanManager(this.svg);
         
+        // Initialize properties manager
+        this.propertiesManager = new PropertiesManager(this.eventBus);
+        
         // Initialize drawing tools
         this.drawingTools = {
             line: new LineTool(this),
@@ -52,7 +56,6 @@ class SVGVectorEditor {
         this.setupEventBusListeners();
         this.setupEventListeners();
         this.setupTools();
-        this.setupProperties();
         this.setupLayers();
         this.eventBus.emit('statusUpdate', 'Ready');
     }
@@ -60,7 +63,7 @@ class SVGVectorEditor {
     setupEventBusListeners() {
         // Listen for element selection events
         this.eventBus.on('elementSelected', (element) => {
-            this.updatePropertiesPanel(element);
+            this.propertiesManager.updatePropertiesPanel(element);
             this.showSelectionHandles(element);
             this.showAnchorPoints(element);
             this.renderRepeatPoints(element);
@@ -89,18 +92,7 @@ class SVGVectorEditor {
             this.eventBus.emit('statusUpdate', `${tool.charAt(0).toUpperCase() + tool.slice(1)} Tool Active`);
         });
 
-        // Listen for property changes
-        this.eventBus.on('propertyChanged', ({ property, value }) => {
-            if (this.selectedElement) {
-                // Handle "none" color values
-                if (property === 'stroke' || property === 'fill') {
-                    const colorValue = value === '#ffffff' ? 'none' : value;
-                    this.selectedElement.setAttribute(property, colorValue);
-                } else {
-                    this.selectedElement.setAttribute(property, value);
-                }
-            }
-        });
+
     }
 
     setupEventListeners() {
@@ -167,44 +159,6 @@ class SVGVectorEditor {
                 toolButtons.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
             });
-        });
-    }
-
-    setupProperties() {
-        // Stroke width
-        const strokeWidthInput = document.getElementById('strokeWidth');
-        const strokeWidthValue = document.getElementById('strokeWidthValue');
-        strokeWidthInput.addEventListener('input', (e) => {
-            strokeWidthValue.textContent = e.target.value;
-            this.eventBus.emit('propertyChanged', { property: 'stroke-width', value: e.target.value });
-        });
-
-        // Opacity
-        const opacityInput = document.getElementById('opacity');
-        const opacityValue = document.getElementById('opacityValue');
-        opacityInput.addEventListener('input', (e) => {
-            opacityValue.textContent = e.target.value + '%';
-            this.eventBus.emit('propertyChanged', { property: 'opacity', value: e.target.value / 100 });
-        });
-
-        // Colors
-        document.getElementById('strokeColor').addEventListener('change', (e) => {
-            this.eventBus.emit('propertyChanged', { property: 'stroke', value: e.target.value });
-        });
-
-        document.getElementById('fillColor').addEventListener('change', (e) => {
-            this.eventBus.emit('propertyChanged', { property: 'fill', value: e.target.value });
-        });
-
-        // No color buttons
-        document.getElementById('noStrokeColor').addEventListener('click', () => {
-            document.getElementById('strokeColor').value = '#ffffff';
-            this.eventBus.emit('propertyChanged', { property: 'stroke', value: '#ffffff' });
-        });
-
-        document.getElementById('noFillColor').addEventListener('click', () => {
-            document.getElementById('fillColor').value = '#ffffff';
-            this.eventBus.emit('propertyChanged', { property: 'fill', value: '#ffffff' });
         });
     }
 
@@ -1764,44 +1718,7 @@ class SVGVectorEditor {
 
     // Utility Methods
     applyCurrentProperties(element) {
-        const strokeColor = document.getElementById('strokeColor').value;
-        const fillColor = document.getElementById('fillColor').value;
-        const strokeWidth = document.getElementById('strokeWidth').value;
-        const opacity = document.getElementById('opacity').value / 100;
-
-        // Handle "none" color values
-        element.setAttribute('stroke', strokeColor === '#ffffff' ? 'none' : strokeColor);
-        element.setAttribute('fill', fillColor === '#ffffff' ? 'none' : fillColor);
-        element.setAttribute('stroke-width', strokeWidth);
-        element.setAttribute('opacity', opacity);
-    }
-
-    updateSelectedElementProperty(property, value) {
-        if (this.selectedElement) {
-            // Handle "none" color values
-            if (property === 'stroke' || property === 'fill') {
-                const colorValue = value === '#ffffff' ? 'none' : value;
-                this.selectedElement.setAttribute(property, colorValue);
-            } else {
-                this.selectedElement.setAttribute(property, value);
-            }
-        }
-    }
-
-    updatePropertiesPanel(element) {
-        if (!element) return;
-        
-        // Handle "none" color values when displaying in color pickers
-        const strokeColor = element.getAttribute('stroke');
-        const fillColor = element.getAttribute('fill');
-        
-        document.getElementById('strokeColor').value = strokeColor === 'none' ? '#ffffff' : (strokeColor || '#000000');
-        document.getElementById('fillColor').value = fillColor === 'none' ? '#ffffff' : (fillColor || '#ffffff');
-        document.getElementById('strokeWidth').value = element.getAttribute('stroke-width') || '2';
-        document.getElementById('opacity').value = (element.getAttribute('opacity') || 1) * 100;
-        
-        document.getElementById('strokeWidthValue').textContent = element.getAttribute('stroke-width') || '2';
-        document.getElementById('opacityValue').textContent = Math.round((element.getAttribute('opacity') || 1) * 100) + '%';
+        this.propertiesManager.applyCurrentProperties(element);
     }
 
     updateLayersList() {

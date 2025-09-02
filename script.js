@@ -3,6 +3,7 @@ import {Shape, LineShape, RectangleShape, CircleShape, PathShape} from './shapes
 import {ZoomPanManager} from './zoom-pan-manager.js';
 import {EventBus} from './event-bus.js';
 import {PropertiesManager} from './properties-manager.js';
+import {SelectionManager} from './selection-manager.js';
 
 class SVGVectorEditor {
     constructor() {
@@ -10,19 +11,14 @@ class SVGVectorEditor {
         this.overlay = document.getElementById('canvasOverlay');
         this.currentTool = 'select';
         this.isDrawing = false;
-        this.selectedElement = null;
         this.elements = [];
         this.currentPath = null;
         this.pathPoints = [];
         this.pathSegments = []; // New: stores path segments with anchor and control points
         this.drawingStartPoint = null;
-        this.selectionBox = null;
-        this.selectionHandles = [];
         this.anchorPoints = [];
         this.repeatPoints = []; // overlay elements for repeat points of selected element
         this.controlPoints = []; // New: stores control points for curves
-        this.isDragging = false;
-        this.dragOffset = { x: 0, y: 0 };
         this.selectedAnchorPoint = null;
         this.isDraggingAnchor = false;
         this.anchorDragOffset = { x: 0, y: 0 };
@@ -40,6 +36,9 @@ class SVGVectorEditor {
         
         // Initialize properties manager
         this.propertiesManager = new PropertiesManager(this.eventBus);
+        
+        // Initialize selection manager
+        this.selectionManager = new SelectionManager(this, this.overlay, this.eventBus);
         
         // Initialize drawing tools
         this.drawingTools = {
@@ -64,16 +63,24 @@ class SVGVectorEditor {
         // Listen for element selection events
         this.eventBus.on('elementSelected', (element) => {
             this.propertiesManager.updatePropertiesPanel(element);
-            this.showSelectionHandles(element);
+            this.selectionManager.showSelectionHandles(element);
             this.showAnchorPoints(element);
             this.renderRepeatPoints(element);
         });
 
         // Listen for selection cleared events
         this.eventBus.on('selectionCleared', () => {
-            this.clearSelectionHandles();
-            this.clearAnchorPoints();
+            this.selectionManager.clearSelectionHandles();
             this.clearRepeatPoints();
+        });
+
+        // Listen for selection cleared events (for anchor points)
+        this.eventBus.on('selectionClearedForAnchorPoints', () => {
+            this.clearAnchorPoints();
+            // Clear anchor point selection
+            if (this.selectedAnchorPoint) {
+                this.selectedAnchorPoint = null;
+            }
         });
 
         // Listen for status updates
@@ -137,10 +144,10 @@ class SVGVectorEditor {
         if (createRepeatBtn && repeatCountInput) {
             createRepeatBtn.addEventListener('click', () => this.handleCreateRepeatPoints());
             repeatCountInput.addEventListener('change', () => {
-                if (this.selectedElement && this.getRepeatMeta(this.selectedElement)) {
-                    this.createOrUpdateRepeatPoints(this.selectedElement, parseInt(repeatCountInput.value, 10));
-                    this.renderRepeatPoints(this.selectedElement);
-                }
+                        if (this.selectionManager.getSelectedElement() && this.getRepeatMeta(this.selectionManager.getSelectedElement())) {
+            this.createOrUpdateRepeatPoints(this.selectionManager.getSelectedElement(), parseInt(repeatCountInput.value, 10));
+            this.renderRepeatPoints(this.selectionManager.getSelectedElement());
+        }
             });
             // Prevent backspace from triggering delete operation
             repeatCountInput.addEventListener('keydown', (e) => {
@@ -214,9 +221,9 @@ class SVGVectorEditor {
         this.isDrawing = true;
 
         // Handle dragging for selected elements
-        if (this.currentTool === 'select' && this.selectedElement && 
-            (event.target === this.selectedElement || event.target.classList.contains('selection-handle') || event.target.classList.contains('path-point'))) {
-            this.startDragging(pos);
+        if (this.currentTool === 'select' && this.selectionManager.getSelectedElement() && 
+            (event.target === this.selectionManager.getSelectedElement() || event.target.classList.contains('selection-handle') || event.target.classList.contains('path-point'))) {
+            this.selectionManager.startDragging(pos);
             return;
         }
 
@@ -242,7 +249,7 @@ class SVGVectorEditor {
             case 'select':
                 // Don't start selection if we clicked on an element
                 if (event.target === this.svg) {
-                    this.startSelection(pos);
+                    this.selectionManager.startSelection(pos);
                 }
                 break;
             case 'anchor':
@@ -276,8 +283,8 @@ class SVGVectorEditor {
         }
         
         // Handle dragging
-        if (this.isDragging && this.selectedElement) {
-            this.updateDragging(pos);
+        if (this.selectionManager.isDraggingElement() && this.selectionManager.getSelectedElement()) {
+            this.selectionManager.updateDragging(pos);
             return;
         }
 
@@ -304,7 +311,7 @@ class SVGVectorEditor {
 
         switch (this.currentTool) {
             case 'select':
-                this.updateSelection(pos);
+                this.selectionManager.updateSelection(pos, this.drawingStartPoint);
                 break;
             case 'line':
                 this.drawingTools.line.updateDrawing(pos);
@@ -325,8 +332,8 @@ class SVGVectorEditor {
         const pos = this.getMousePosition(event);
         
         // Handle dragging
-        if (this.isDragging) {
-            this.finishDragging(pos);
+        if (this.selectionManager.isDraggingElement()) {
+            this.selectionManager.finishDragging();
             return;
         }
 
@@ -354,7 +361,7 @@ class SVGVectorEditor {
 
         switch (this.currentTool) {
             case 'select':
-                this.finishSelection(pos);
+                this.selectionManager.finishSelection();
                 break;
             case 'line':
                 this.drawingTools.line.finishDrawing(pos);
@@ -399,37 +406,6 @@ class SVGVectorEditor {
         }
     }
 
-    // Selection Tool
-    startSelection(pos) {
-        this.selectionBox = document.createElement('div');
-        this.selectionBox.className = 'selection-box';
-        this.selectionBox.style.left = pos.x + 'px';
-        this.selectionBox.style.top = pos.y + 'px';
-        this.overlay.appendChild(this.selectionBox);
-    }
-
-    updateSelection(pos) {
-        if (!this.selectionBox || !this.drawingStartPoint) return;
-        
-        const start = this.drawingStartPoint;
-        const left = Math.min(start.x, pos.x);
-        const top = Math.min(start.y, pos.y);
-        const width = Math.abs(pos.x - start.x);
-        const height = Math.abs(pos.y - start.y);
-        
-        this.selectionBox.style.left = left + 'px';
-        this.selectionBox.style.top = top + 'px';
-        this.selectionBox.style.width = width + 'px';
-        this.selectionBox.style.height = height + 'px';
-    }
-
-    finishSelection(pos) {
-        if (this.selectionBox) {
-            this.selectionBox.remove();
-            this.selectionBox = null;
-        }
-    }
-
     handleSelectClick(event) {
         const target = event.target;
         // Ignore clicks on repeat point markers in SVG
@@ -438,72 +414,14 @@ class SVGVectorEditor {
             return;
         }
         if (target === this.svg) {
-            this.clearSelection();
+            this.selectionManager.clearSelection();
             return;
         }
         
         // Only select if it's a valid SVG element
         if (target.tagName && ['line', 'rect', 'circle', 'path'].includes(target.tagName.toLowerCase())) {
-            this.selectElement(target);
+            this.selectionManager.selectElement(target);
         }
-    }
-
-    selectElement(element) {
-        this.clearSelection();
-        this.selectedElement = element;
-        element.style.outline = '2px dashed #3498db';
-        
-        // Emit event instead of direct method calls
-        this.eventBus.emit('elementSelected', element);
-        console.log('Element selected:', element.tagName, element);
-    }
-
-    clearSelection() {
-        if (this.selectedElement) {
-            this.selectedElement.style.outline = '';
-            this.selectedElement = null;
-        }
-        
-        // Emit event instead of direct method calls
-        this.eventBus.emit('selectionCleared');
-        
-        // Clear anchor point selection
-        if (this.selectedAnchorPoint) {
-            this.selectedAnchorPoint = null;
-        }
-    }
-
-    showSelectionHandles(element) {
-        const rect = element.getBoundingClientRect();
-        const svgRect = this.svg.getBoundingClientRect();
-        
-        const handles = [
-            { x: rect.left - svgRect.left, y: rect.top - svgRect.top, cursor: 'nw-resize' },
-            { x: rect.right - svgRect.left, y: rect.top - svgRect.top, cursor: 'ne-resize' },
-            { x: rect.right - svgRect.left, y: rect.bottom - svgRect.top, cursor: 'se-resize' },
-            { x: rect.left - svgRect.left, y: rect.bottom - svgRect.top, cursor: 'sw-resize' }
-        ];
-
-        handles.forEach((handle, index) => {
-            const handleElement = document.createElement('div');
-            handleElement.className = 'selection-handle';
-            handleElement.style.left = handle.x + 'px';
-            handleElement.style.top = handle.y + 'px';
-            handleElement.style.cursor = handle.cursor;
-            handleElement.dataset.handleIndex = index;
-            
-            handleElement.addEventListener('mousedown', (e) => {
-                e.stopPropagation();
-                this.startResize(index, e);
-            });
-            this.overlay.appendChild(handleElement);
-            this.selectionHandles.push(handleElement);
-        });
-    }
-
-    clearSelectionHandles() {
-        this.selectionHandles.forEach(handle => handle.remove());
-        this.selectionHandles = [];
     }
 
     clearAnchorPoints() {
@@ -634,7 +552,7 @@ class SVGVectorEditor {
 
     hideAllAnchorPoints() {
         this.clearAnchorPoints();
-        this.clearSelection();
+        this.selectionManager.clearSelection();
     }
 
     showAnchorPointsForElement(element) {
@@ -1012,7 +930,7 @@ class SVGVectorEditor {
         }
 
         // Recompute repeat points for this path as geometry changed
-        if (this.selectedElement === path && path.__repeatMeta && path.__repeatMeta.count > 0) {
+        if (this.selectionManager.getSelectedElement() === path && path.__repeatMeta && path.__repeatMeta.count > 0) {
             this.createOrUpdateRepeatPoints(path, path.__repeatMeta.count);
             this.renderRepeatPoints(path);
         }
@@ -1224,137 +1142,32 @@ class SVGVectorEditor {
         }
     }
 
-    startResize(handleIndex, event) {
-        event.stopPropagation();
-        // Resize functionality would go here
-    }
 
-    // Dragging functionality
-    startDragging(pos) {
-        this.isDragging = true;
-        console.log('Starting drag for element:', this.selectedElement.tagName);
-        
-        // Calculate offset from mouse to element position
-        const tagName = this.selectedElement.tagName.toLowerCase();
-        let elementX, elementY;
-        
-        switch (tagName) {
-            case 'line':
-                elementX = parseFloat(this.selectedElement.getAttribute('x1'));
-                elementY = parseFloat(this.selectedElement.getAttribute('y1'));
-                break;
-            case 'rect':
-                elementX = parseFloat(this.selectedElement.getAttribute('x'));
-                elementY = parseFloat(this.selectedElement.getAttribute('y'));
-                break;
-            case 'circle':
-                elementX = parseFloat(this.selectedElement.getAttribute('cx'));
-                elementY = parseFloat(this.selectedElement.getAttribute('cy'));
-                break;
-            case 'path':
-                // For paths, use the first point
-                const d = this.selectedElement.getAttribute('d');
-                const firstPoint = d.match(/M\s*([-\d.]+)\s+([-\d.]+)/);
-                if (firstPoint) {
-                    elementX = parseFloat(firstPoint[1]);
-                    elementY = parseFloat(firstPoint[2]);
-                } else {
-                    elementX = pos.x;
-                    elementY = pos.y;
-                }
-                break;
-            default:
-                elementX = pos.x;
-                elementY = pos.y;
-        }
-        
-        this.dragOffset = {
-            x: pos.x - elementX,
-            y: pos.y - elementY
-        };
-        console.log('Drag offset:', this.dragOffset);
-    }
 
-    updateDragging(pos) {
-        if (!this.selectedElement) return;
-        
-        const newX = pos.x - this.dragOffset.x;
-        const newY = pos.y - this.dragOffset.y;
-        
-        this.moveElement(this.selectedElement, newX, newY);
-        
-        // Recompute repeat points for moved element
-        if (this.selectedElement.__repeatMeta && this.selectedElement.__repeatMeta.count > 0) {
-            this.createOrUpdateRepeatPoints(this.selectedElement, this.selectedElement.__repeatMeta.count);
-            this.renderRepeatPoints(this.selectedElement);
-        }
-    }
 
-    finishDragging(pos) {
-        this.isDragging = false;
-        this.dragOffset = { x: 0, y: 0 };
-    }
 
-    moveElement(element, x, y) {
-        const tagName = element.tagName.toLowerCase();
-        let shape;
-        
-        switch (tagName) {
-            case 'line':
-                shape = new LineShape(element);
-                break;
-            case 'rect':
-                shape = new RectangleShape(element);
-                break;
-            case 'circle':
-                shape = new CircleShape(element);
-                break;
-            case 'path':
-                shape = new PathShape(element);
-                break;
-            default:
-                return;
-        }
-        
-        const refPoint = shape.getReferencePoint();
-        if (refPoint) {
-            const dx = x - refPoint.x;
-            const dy = y - refPoint.y;
-            shape.move(dx, dy);
-        }
-        
-        // Update selection handles and anchor points
-        this.updateSelectionVisuals();
-        if (this.selectedElement === element && element.__repeatMeta && element.__repeatMeta.count > 0) {
-            this.createOrUpdateRepeatPoints(element, element.__repeatMeta.count);
-            this.renderRepeatPoints(element);
-        }
-    }
 
-    updateSelectionVisuals() {
-        if (this.selectedElement) {
-            this.clearSelectionHandles();
-            this.clearAnchorPoints();
-            this.showSelectionHandles(this.selectedElement);
-            this.showAnchorPoints(this.selectedElement);
-            this.renderRepeatPoints(this.selectedElement);
-        }
-    }
+
+
+
+
+
+
 
     // ===== Repeat Points core logic =====
     handleCreateRepeatPoints() {
-        if (!this.selectedElement) {
+        if (!this.selectionManager.getSelectedElement()) {
             this.showMessage('Select a line or path to create repeat points', 'error');
             return;
         }
-        const tag = this.selectedElement.tagName.toLowerCase();
+        const tag = this.selectionManager.getSelectedElement().tagName.toLowerCase();
         if (!(tag === 'line' || tag === 'path')) {
             this.showMessage('Repeat points currently supported for line and path', 'error');
             return;
         }
         const count = Math.max(1, Math.min(500, parseInt(document.getElementById('repeatCount').value, 10) || 10));
-        this.createOrUpdateRepeatPoints(this.selectedElement, count);
-        this.renderRepeatPoints(this.selectedElement);
+        this.createOrUpdateRepeatPoints(this.selectionManager.getSelectedElement(), count);
+        this.renderRepeatPoints(this.selectionManager.getSelectedElement());
         this.eventBus.emit('statusUpdate', `Created ${count} repeat points`);
     }
 
@@ -1737,7 +1550,7 @@ class SVGVectorEditor {
                 <span class="layer-delete">🗑</span>
             `;
             
-            layerItem.addEventListener('click', () => this.selectElement(element));
+            layerItem.addEventListener('click', () => this.selectionManager.selectElement(element));
             layerItem.querySelector('.layer-delete').addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.deleteElement(element);
@@ -1759,8 +1572,8 @@ class SVGVectorEditor {
     }
 
     deleteSelectedElement() {
-        if (this.selectedElement) {
-            this.deleteElement(this.selectedElement);
+        if (this.selectionManager.getSelectedElement()) {
+            this.deleteElement(this.selectionManager.getSelectedElement());
         }
     }
 
@@ -1769,7 +1582,7 @@ class SVGVectorEditor {
         if (index > -1) {
             this.elements.splice(index, 1);
             element.remove();
-            this.clearSelection();
+            this.selectionManager.clearSelection();
             
             // Emit event instead of direct method call
             this.eventBus.emit('layersChanged');
@@ -1793,7 +1606,7 @@ class SVGVectorEditor {
         // Remove any preview lines
         this.drawingTools.path.removeControlPointPreview();
         this.isDrawing = false;
-        this.clearSelection();
+        this.selectionManager.clearSelection();
     }
 
     clearCanvas() {
@@ -1812,7 +1625,7 @@ class SVGVectorEditor {
             this.drawingTools.path.pathPoints = [];
         }
         
-        this.clearSelection();
+        this.selectionManager.clearSelection();
         // Clear any active repeat point when canvas is cleared
         this.selectedRepeatPoint = null;
         

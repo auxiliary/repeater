@@ -1,3 +1,723 @@
+// Abstract base class for all drawing tools
+class DrawingTool {
+    constructor(editor) {
+        this.editor = editor;
+        this.isDrawing = false;
+        this.currentElement = null;
+        this.drawingStartPoint = null;
+    }
+
+    startDrawing(pos) {
+        this.isDrawing = true;
+        this.drawingStartPoint = pos;
+        this.createElement(pos);
+    }
+
+    updateDrawing(pos) {
+        if (this.isDrawing && this.currentElement) {
+            this.updateElement(pos);
+        }
+    }
+
+    finishDrawing(pos) {
+        if (this.isDrawing && this.currentElement) {
+            this.finalizeElement(pos);
+            this.isDrawing = false;
+            this.currentElement = null;
+            this.drawingStartPoint = null;
+        }
+    }
+
+    // Abstract methods to be implemented by subclasses
+    createElement(pos) {
+        throw new Error('createElement must be implemented by subclass');
+    }
+
+    updateElement(pos) {
+        throw new Error('updateElement must be implemented by subclass');
+    }
+
+    finalizeElement(pos) {
+        throw new Error('finalizeElement must be implemented by subclass');
+    }
+
+    cancelDrawing() {
+        if (this.currentElement) {
+            this.currentElement.remove();
+            this.currentElement = null;
+        }
+        this.isDrawing = false;
+        this.drawingStartPoint = null;
+    }
+}
+
+// Abstract base class for all geometric shapes
+class Shape {
+    constructor(svgElement, attributes = {}) {
+        this.svgElement = svgElement;
+        this.applyAttributes(attributes);
+    }
+
+    applyAttributes(attributes) {
+        Object.entries(attributes).forEach(([key, value]) => {
+            if (value !== undefined && value !== null) {
+                this.svgElement.setAttribute(key, value);
+            }
+        });
+    }
+
+    getElement() {
+        return this.svgElement;
+    }
+
+    // Abstract methods to be implemented by subclasses
+    updateGeometry(pos) {
+        throw new Error('updateGeometry must be implemented by subclass');
+    }
+
+    getReferencePoint() {
+        throw new Error('getReferencePoint must be implemented by subclass');
+    }
+
+    move(dx, dy) {
+        throw new Error('move must be implemented by subclass');
+    }
+
+    clone() {
+        throw new Error('clone must be implemented by subclass');
+    }
+}
+
+// Concrete Line Tool
+class LineTool extends DrawingTool {
+    createElement(pos) {
+        this.currentElement = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        this.currentElement.setAttribute('x1', pos.x);
+        this.currentElement.setAttribute('y1', pos.y);
+        this.currentElement.setAttribute('x2', pos.x);
+        this.currentElement.setAttribute('y2', pos.y);
+        this.editor.applyCurrentProperties(this.currentElement);
+        this.editor.svg.appendChild(this.currentElement);
+    }
+
+    updateElement(pos) {
+        if (this.currentElement) {
+            this.currentElement.setAttribute('x2', pos.x);
+            this.currentElement.setAttribute('y2', pos.y);
+        }
+    }
+
+    finalizeElement(pos) {
+        if (this.currentElement) {
+            this.editor.elements.push(this.currentElement);
+            const newElement = this.currentElement;
+            
+            this.editor.eventBus.emit('layersChanged');
+            this.editor.handleDrawRepeatForNewElement(newElement);
+        }
+    }
+}
+
+// Concrete Rectangle Tool
+class RectangleTool extends DrawingTool {
+    createElement(pos) {
+        this.currentElement = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        this.currentElement.setAttribute('x', pos.x);
+        this.currentElement.setAttribute('y', pos.y);
+        this.currentElement.setAttribute('width', 0);
+        this.currentElement.setAttribute('height', 0);
+        this.editor.applyCurrentProperties(this.currentElement);
+        this.editor.svg.appendChild(this.currentElement);
+    }
+
+    updateElement(pos) {
+        if (this.currentElement && this.drawingStartPoint) {
+            const start = this.drawingStartPoint;
+            const x = Math.min(start.x, pos.x);
+            const y = Math.min(start.y, pos.y);
+            const width = Math.abs(pos.x - start.x);
+            const height = Math.abs(pos.y - start.y);
+            
+            this.currentElement.setAttribute('x', x);
+            this.currentElement.setAttribute('y', y);
+            this.currentElement.setAttribute('width', width);
+            this.currentElement.setAttribute('height', height);
+        }
+    }
+
+    finalizeElement(pos) {
+        if (this.currentElement) {
+            this.editor.elements.push(this.currentElement);
+            const newElement = this.currentElement;
+            
+            this.editor.eventBus.emit('layersChanged');
+            this.editor.handleDrawRepeatForNewElement(newElement);
+        }
+    }
+}
+
+// Concrete Circle Tool
+class CircleTool extends DrawingTool {
+    createElement(pos) {
+        this.currentElement = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        this.currentElement.setAttribute('cx', pos.x);
+        this.currentElement.setAttribute('cy', pos.y);
+        this.currentElement.setAttribute('r', 0);
+        this.editor.applyCurrentProperties(this.currentElement);
+        this.editor.svg.appendChild(this.currentElement);
+    }
+
+    updateElement(pos) {
+        if (this.currentElement && this.drawingStartPoint) {
+            const start = this.drawingStartPoint;
+            const radius = Math.sqrt(
+                Math.pow(pos.x - start.x, 2) + Math.pow(pos.y - start.y, 2)
+            );
+            this.currentElement.setAttribute('r', radius);
+        }
+    }
+
+    finalizeElement(pos) {
+        if (this.currentElement) {
+            this.editor.elements.push(this.currentElement);
+            const newElement = this.currentElement;
+            
+            this.editor.eventBus.emit('layersChanged');
+            this.editor.handleDrawRepeatForNewElement(newElement);
+        }
+    }
+}
+
+// Concrete Path Tool
+class PathTool extends DrawingTool {
+    constructor(editor) {
+        super(editor);
+        this.currentPath = null;
+        this.pathPoints = [];
+        this.pathSegments = [];
+        this.curveStartPoint = null;
+        this.isCreatingCurve = false;
+        this.controlPreviewLines = [];
+        this.controlHandles = [];
+    }
+
+    startDrawing(pos) {
+        // For path tool, we handle drawing differently - via clicks and drags
+        // Store the start point but don't immediately create on mouse down
+        this.isDrawing = true;
+        this.drawingStartPoint = pos;
+    }
+
+    createElement(pos) {
+        this.startNewPath(pos);
+        this.editor.eventBus.emit('statusUpdate', 'Path started. Click to add points, drag to create curves. Double-click or press Enter to finish.');
+    }
+
+    startPathInteraction(pos) {
+        console.log('Starting path interaction at:', pos);
+        
+        // Call the base startDrawing method to maintain proper state
+        this.startDrawing(pos);
+        
+        // Store the mouse down position to detect if this becomes a drag
+        this.mouseDownPos = pos;
+        this.isDragging = false;
+        
+        // Always prepare for potential curve creation when mouse down
+        // (we'll determine later whether to create curve or point based on drag)
+        this.startPotentialCurve(pos);
+    }
+
+    startPotentialCurve(pos) {
+        // Store the position where we started dragging
+        this.curveStartPoint = pos;
+        this.isCreatingCurve = true;
+        this.editor.eventBus.emit('statusUpdate', 'Drag to create curve, release to finish');
+        console.log('Starting potential curve at:', pos);
+    }
+
+    addPathPoint(pos) {
+        if (!this.currentPath) {
+            this.startNewPath(pos);
+            this.editor.eventBus.emit('statusUpdate', 'Path started. Click to add points, double-click or press Enter to finish.');
+        } else {
+            this.addPointToPath(pos);
+            this.editor.eventBus.emit('statusUpdate', `Path: ${this.pathPoints.length} points. Double-click or press Enter to finish.`);
+        }
+    }
+
+    addPointToPath(pos) {
+        this.pathPoints.push(pos);
+        
+        const startPoint = this.pathSegments.length > 0 ? 
+            this.pathSegments[this.pathSegments.length - 1].endPoint : 
+            this.pathSegments[0].startPoint;
+        
+        const segment = {
+            type: 'line',
+            startPoint: startPoint,
+            endPoint: pos,
+            control1: null,
+            control2: null
+        };
+        
+        this.pathSegments.push(segment);
+        this.updatePathFromSegments();
+    }
+
+    updateDrawing(pos) {
+        // Override base class method to handle path-specific behavior
+        if (this.isDrawing) {
+            this.updateElement(pos);
+        }
+    }
+
+    finishDrawing(pos) {
+        // Override base class method to handle path-specific behavior
+        if (this.isDrawing) {
+            this.finalizeElement(pos);
+            this.isDrawing = false;
+            this.drawingStartPoint = null;
+        }
+    }
+
+    updateElement(pos) {
+        // Check if we're actually dragging (mouse moved significant distance)
+        if (this.mouseDownPos && !this.isDragging) {
+            const distance = Math.sqrt(
+                Math.pow(pos.x - this.mouseDownPos.x, 2) + 
+                Math.pow(pos.y - this.mouseDownPos.y, 2)
+            );
+            if (distance > 5) { // Threshold for considering it a drag
+                this.isDragging = true;
+            }
+        }
+        
+        // Only show curve preview if we're actually dragging
+        if (this.isDragging && this.isCreatingCurve && this.curveStartPoint) {
+            this.updateCurvePreview(pos);
+        } else if (this.currentPath && this.pathSegments.length > 0) {
+            this.updatePathPreview(pos);
+        }
+        
+        if (this.isCreatingCurve && this.isDragging) {
+            this.editor.svg.style.cursor = 'crosshair';
+        }
+    }
+
+    finalizeElement(pos) {
+        this.removeControlPointPreview();
+        
+        // Only create segments if we actually dragged to create a curve
+        if (this.isDragging && this.isCreatingCurve && this.curveStartPoint) {
+            // If we don't have a path yet, create it first
+            if (!this.currentPath) {
+                this.startNewPath(this.curveStartPoint);
+            }
+            this.createCurvedSegment(pos);
+            this.editor.eventBus.emit('statusUpdate', `Path: ${this.pathSegments.length} segments. Double-click or press Enter to finish.`);
+        }
+        // Note: If we didn't drag, no segment should be created here - 
+        // point addition is handled by click events
+        
+        // Reset state
+        this.isCreatingCurve = false;
+        this.curveStartPoint = null;
+        this.isDragging = false;
+        this.mouseDownPos = null;
+    }
+
+    startNewPath(pos) {
+        this.currentPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        this.pathPoints = [pos];
+        this.pathSegments = [];
+        
+        const initialSegment = {
+            type: 'line',
+            startPoint: pos,
+            endPoint: pos,
+            control1: null,
+            control2: null
+        };
+        this.pathSegments.push(initialSegment);
+        
+        this.currentPath.setAttribute('d', `M ${pos.x} ${pos.y}`);
+        this.editor.applyCurrentProperties(this.currentPath);
+        this.editor.svg.appendChild(this.currentPath);
+    }
+
+
+
+    updateCurvePreview(pos) {
+        if (!this.curveStartPoint) return;
+        
+        // If we don't have a path yet, create it
+        if (!this.currentPath) {
+            this.startNewPath(this.curveStartPoint);
+        }
+        
+        const startPoint = this.pathSegments.length > 0 ? 
+            this.pathSegments[this.pathSegments.length - 1].endPoint : 
+            this.pathSegments[0].startPoint;
+        
+        const control1 = {
+            x: startPoint.x + (this.curveStartPoint.x - startPoint.x) * 0.3,
+            y: startPoint.y + (this.curveStartPoint.y - startPoint.y) * 0.3
+        };
+        const control2 = {
+            x: this.curveStartPoint.x + (pos.x - this.curveStartPoint.x) * 0.7,
+            y: this.curveStartPoint.y + (pos.y - this.curveStartPoint.y) * 0.7
+        };
+        
+        let pathData = this.buildPathDataFromSegments();
+        pathData += ` C ${control1.x} ${control1.y} ${control2.x} ${control2.y} ${pos.x} ${pos.y}`;
+        
+        this.currentPath.setAttribute('d', pathData);
+        this.showControlPointPreview(startPoint, control1, control2, pos);
+    }
+
+    updatePathPreview(pos) {
+        if (this.currentPath && this.pathSegments.length > 0) {
+            let pathData = this.buildPathDataFromSegments();
+            pathData += ` L ${pos.x} ${pos.y}`;
+            this.currentPath.setAttribute('d', pathData);
+        }
+    }
+
+    createStraightSegment(endPoint) {
+        const startPoint = this.pathSegments.length > 0 ? 
+            this.pathSegments[this.pathSegments.length - 1].endPoint : 
+            this.pathSegments[0].startPoint;
+        
+        const segment = {
+            type: 'line',
+            startPoint: startPoint,
+            endPoint: endPoint,
+            control1: null,
+            control2: null
+        };
+        
+        this.pathSegments.push(segment);
+        this.updatePathFromSegments();
+    }
+
+    createCurvedSegment(endPoint) {
+        const startPoint = this.pathSegments.length > 0 ? 
+            this.pathSegments[this.pathSegments.length - 1].endPoint : 
+            this.pathSegments[0].startPoint;
+        
+        const dragVector = {
+            x: endPoint.x - this.curveStartPoint.x,
+            y: endPoint.y - this.curveStartPoint.y
+        };
+        
+        const control1 = {
+            x: startPoint.x + (this.curveStartPoint.x - startPoint.x) * 0.3,
+            y: startPoint.y + (this.curveStartPoint.y - startPoint.y) * 0.3
+        };
+        
+        const control2 = {
+            x: this.curveStartPoint.x + dragVector.x * 0.7,
+            y: this.curveStartPoint.y + dragVector.y * 0.7
+        };
+        
+        const segment = {
+            type: 'curve',
+            startPoint: startPoint,
+            endPoint: endPoint,
+            control1: control1,
+            control2: control2
+        };
+        
+        this.pathSegments.push(segment);
+        this.updatePathFromSegments();
+    }
+
+    updatePathFromSegments() {
+        if (!this.currentPath) return;
+        
+        const pathData = this.buildPathDataFromSegments();
+        this.currentPath.setAttribute('d', pathData);
+    }
+
+    buildPathDataFromSegments() {
+        if (this.pathSegments.length === 0) return '';
+        
+        let pathData = '';
+        
+        this.pathSegments.forEach((segment, index) => {
+            if (index === 0) {
+                pathData += `M ${segment.startPoint.x} ${segment.startPoint.y}`;
+            }
+            
+            if (segment.type === 'line') {
+                pathData += ` L ${segment.endPoint.x} ${segment.endPoint.y}`;
+            } else if (segment.type === 'curve') {
+                pathData += ` C ${segment.control1.x} ${segment.control1.y} ${segment.control2.x} ${segment.control2.y} ${segment.endPoint.x} ${segment.endPoint.y}`;
+            }
+        });
+        
+        return pathData;
+    }
+
+    showControlPointPreview(startPoint, control1, control2, endPoint) {
+        this.removeControlPointPreview();
+        
+        this.controlPreviewLines = [];
+        
+        const line1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line1.setAttribute('x1', startPoint.x);
+        line1.setAttribute('y1', startPoint.y);
+        line1.setAttribute('x2', control1.x);
+        line1.setAttribute('y2', control1.y);
+        line1.setAttribute('stroke', '#f39c12');
+        line1.setAttribute('stroke-width', '1');
+        line1.setAttribute('stroke-dasharray', '5,5');
+        line1.setAttribute('opacity', '0.6');
+        this.editor.svg.appendChild(line1);
+        this.controlPreviewLines.push(line1);
+        
+        const line2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line2.setAttribute('x1', control2.x);
+        line2.setAttribute('y1', control2.y);
+        line2.setAttribute('x2', endPoint.x);
+        line2.setAttribute('y2', endPoint.y);
+        line2.setAttribute('stroke', '#f39c12');
+        line2.setAttribute('stroke-width', '1');
+        line2.setAttribute('stroke-dasharray', '5,5');
+        line2.setAttribute('opacity', '0.6');
+        this.editor.svg.appendChild(line2);
+        this.controlPreviewLines.push(line2);
+    }
+
+    removeControlPointPreview() {
+        if (this.controlPreviewLines) {
+            this.controlPreviewLines.forEach(line => line.remove());
+            this.controlPreviewLines = [];
+        }
+    }
+
+    finishPath() {
+        if (this.currentPath) {
+            this.removeControlPointPreview();
+            
+            this.editor.elements.push(this.currentPath);
+            const finalized = this.currentPath;
+            this.currentPath = null;
+            this.pathPoints = [];
+            this.pathSegments = [];
+            
+            this.editor.eventBus.emit('layersChanged');
+            this.editor.eventBus.emit('statusUpdate', 'Path completed');
+            this.editor.handleDrawRepeatForNewElement(finalized);
+        }
+    }
+
+    cancelDrawing() {
+        super.cancelDrawing();
+        if (this.currentPath) {
+            this.currentPath.remove();
+            this.currentPath = null;
+            this.pathPoints = [];
+            this.pathSegments = [];
+        }
+        this.removeControlPointPreview();
+        this.isCreatingCurve = false;
+        this.curveStartPoint = null;
+    }
+}
+
+// Concrete Shape Classes
+class LineShape extends Shape {
+    constructor(svgElement, attributes = {}) {
+        super(svgElement, attributes);
+    }
+
+    updateGeometry(pos) {
+        // This would be used for dynamic updates
+    }
+
+    getReferencePoint() {
+        return {
+            x: parseFloat(this.svgElement.getAttribute('x1')),
+            y: parseFloat(this.svgElement.getAttribute('y1'))
+        };
+    }
+
+    move(dx, dy) {
+        const x1 = parseFloat(this.svgElement.getAttribute('x1')) + dx;
+        const y1 = parseFloat(this.svgElement.getAttribute('y1')) + dy;
+        const x2 = parseFloat(this.svgElement.getAttribute('x2')) + dx;
+        const y2 = parseFloat(this.svgElement.getAttribute('y2')) + dy;
+        
+        this.svgElement.setAttribute('x1', x1);
+        this.svgElement.setAttribute('y1', y1);
+        this.svgElement.setAttribute('x2', x2);
+        this.svgElement.setAttribute('y2', y2);
+    }
+
+    clone() {
+        const clone = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        ['stroke', 'fill', 'stroke-width', 'opacity'].forEach(attr => {
+            const value = this.svgElement.getAttribute(attr);
+            if (value !== null) clone.setAttribute(attr, value);
+        });
+        
+        clone.setAttribute('x1', this.svgElement.getAttribute('x1'));
+        clone.setAttribute('y1', this.svgElement.getAttribute('y1'));
+        clone.setAttribute('x2', this.svgElement.getAttribute('x2'));
+        clone.setAttribute('y2', this.svgElement.getAttribute('y2'));
+        
+        return clone;
+    }
+}
+
+class RectangleShape extends Shape {
+    constructor(svgElement, attributes = {}) {
+        super(svgElement, attributes);
+    }
+
+    updateGeometry(pos) {
+        // This would be used for dynamic updates
+    }
+
+    getReferencePoint() {
+        return {
+            x: parseFloat(this.svgElement.getAttribute('x')),
+            y: parseFloat(this.svgElement.getAttribute('y'))
+        };
+    }
+
+    move(dx, dy) {
+        const x = parseFloat(this.svgElement.getAttribute('x')) + dx;
+        const y = parseFloat(this.svgElement.getAttribute('y')) + dy;
+        
+        this.svgElement.setAttribute('x', x);
+        this.svgElement.setAttribute('y', y);
+    }
+
+    clone() {
+        const clone = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        ['stroke', 'fill', 'stroke-width', 'opacity', 'width', 'height'].forEach(attr => {
+            const value = this.svgElement.getAttribute(attr);
+            if (value !== null) clone.setAttribute(attr, value);
+        });
+        
+        clone.setAttribute('x', this.svgElement.getAttribute('x'));
+        clone.setAttribute('y', this.svgElement.getAttribute('y'));
+        
+        return clone;
+    }
+}
+
+class CircleShape extends Shape {
+    constructor(svgElement, attributes = {}) {
+        super(svgElement, attributes);
+    }
+
+    updateGeometry(pos) {
+        // This would be used for dynamic updates
+    }
+
+    getReferencePoint() {
+        return {
+            x: parseFloat(this.svgElement.getAttribute('cx')),
+            y: parseFloat(this.svgElement.getAttribute('cy'))
+        };
+    }
+
+    move(dx, dy) {
+        const cx = parseFloat(this.svgElement.getAttribute('cx')) + dx;
+        const cy = parseFloat(this.svgElement.getAttribute('cy')) + dy;
+        
+        this.svgElement.setAttribute('cx', cx);
+        this.svgElement.setAttribute('cy', cy);
+    }
+
+    clone() {
+        const clone = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        ['stroke', 'fill', 'stroke-width', 'opacity', 'r'].forEach(attr => {
+            const value = this.svgElement.getAttribute(attr);
+            if (value !== null) clone.setAttribute(attr, value);
+        });
+        
+        clone.setAttribute('cx', this.svgElement.getAttribute('cx'));
+        clone.setAttribute('cy', this.svgElement.getAttribute('cy'));
+        
+        return clone;
+    }
+}
+
+class PathShape extends Shape {
+    constructor(svgElement, attributes = {}) {
+        super(svgElement, attributes);
+    }
+
+    updateGeometry(pos) {
+        // This would be used for dynamic updates
+    }
+
+    getReferencePoint() {
+        const d = this.svgElement.getAttribute('d');
+        const m = d && d.match(/M\s*([-\d.]+)\s+([-\d.]+)/);
+        if (m) return { x: parseFloat(m[1]), y: parseFloat(m[2]) };
+        return null;
+    }
+
+    move(dx, dy) {
+        const d = this.svgElement.getAttribute('d');
+        const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
+        
+        if (commands.length === 0) return;
+        
+        let firstPoint = null;
+        if (commands[0].startsWith('M')) {
+            firstPoint = commands[0].match(/M\s*([-\d.]+)\s+([-\d.]+)/);
+        }
+        if (!firstPoint) return;
+        
+        const offsetX = dx;
+        const offsetY = dy;
+        
+        const newCommands = commands.map(cmd => {
+            if (cmd.startsWith('M') || cmd.startsWith('L')) {
+                const match = cmd.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
+                if (match) {
+                    const x = parseFloat(match[1]) + offsetX;
+                    const y = parseFloat(match[2]) + offsetY;
+                    return cmd.replace(/[ML]\s*[-\d.]+[,\s]+[-\d.]+/, `${cmd[0]} ${x} ${y}`);
+                }
+            } else if (cmd.startsWith('C')) {
+                const parts = cmd.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
+                if (parts) {
+                    const x1 = parseFloat(parts[1]) + offsetX;
+                    const y1 = parseFloat(parts[2]) + offsetY;
+                    const x2 = parseFloat(parts[3]) + offsetX;
+                    const y2 = parseFloat(parts[4]) + offsetY;
+                    const x3 = parseFloat(parts[5]) + offsetX;
+                    const y3 = parseFloat(parts[6]) + offsetY;
+                    return `C ${x1} ${y1} ${x2} ${y2} ${x3} ${y3}`;
+                }
+            }
+            return cmd;
+        });
+        
+        this.svgElement.setAttribute('d', newCommands.join(' '));
+    }
+
+    clone() {
+        const clone = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        ['stroke', 'fill', 'stroke-width', 'opacity'].forEach(attr => {
+            const value = this.svgElement.getAttribute(attr);
+            if (value !== null) clone.setAttribute(attr, value);
+        });
+        
+        clone.setAttribute('d', this.svgElement.getAttribute('d'));
+        
+        return clone;
+    }
+}
+
 class EventBus {
     constructor() {
         this.events = {};
@@ -160,6 +880,14 @@ class SVGVectorEditor {
         
         // Initialize zoom and pan manager
         this.zoomPanManager = new ZoomPanManager(this.svg);
+        
+        // Initialize drawing tools
+        this.drawingTools = {
+            line: new LineTool(this),
+            rectangle: new RectangleTool(this),
+            circle: new CircleTool(this),
+            path: new PathTool(this)
+        };
         
         this.init();
     }
@@ -330,9 +1058,9 @@ class SVGVectorEditor {
 
     setTool(tool) {
         // Auto-finalize any current path before switching tools
-        if (this.currentTool === 'path' && this.currentPath) {
+        if (this.currentTool === 'path' && this.drawingTools.path.currentPath) {
             console.log('Auto-finalizing path due to tool switch');
-            this.finishPath();
+            this.drawingTools.path.finishPath();
         }
         
         this.currentTool = tool;
@@ -414,17 +1142,17 @@ class SVGVectorEditor {
                 this.zoomPanManager.startPanning(pos);
                 break;
             case 'line':
-                this.startDrawingLine(pos);
+                this.drawingTools.line.startDrawing(pos);
                 break;
             case 'rectangle':
-                this.startDrawingRectangle(pos);
+                this.drawingTools.rectangle.startDrawing(pos);
                 break;
             case 'circle':
-                this.startDrawingCircle(pos);
+                this.drawingTools.circle.startDrawing(pos);
                 break;
             case 'path':
                 console.log('Path tool triggered, starting path interaction at:', pos);
-                this.startPathInteraction(pos);
+                this.drawingTools.path.startPathInteraction(pos);
                 break;
         }
     }
@@ -469,16 +1197,16 @@ class SVGVectorEditor {
                 this.updateSelection(pos);
                 break;
             case 'line':
-                this.updateDrawingLine(pos);
+                this.drawingTools.line.updateDrawing(pos);
                 break;
             case 'rectangle':
-                this.updateDrawingRectangle(pos);
+                this.drawingTools.rectangle.updateDrawing(pos);
                 break;
             case 'circle':
-                this.updateDrawingCircle(pos);
+                this.drawingTools.circle.updateDrawing(pos);
                 break;
             case 'path':
-                this.updatePathInteraction(pos);
+                this.drawingTools.path.updateDrawing(pos);
                 break;
         }
     }
@@ -519,16 +1247,16 @@ class SVGVectorEditor {
                 this.finishSelection(pos);
                 break;
             case 'line':
-                this.finishDrawingLine(pos);
+                this.drawingTools.line.finishDrawing(pos);
                 break;
             case 'rectangle':
-                this.finishDrawingRectangle(pos);
+                this.drawingTools.rectangle.finishDrawing(pos);
                 break;
             case 'circle':
-                this.finishDrawingCircle(pos);
+                this.drawingTools.circle.finishDrawing(pos);
                 break;
             case 'path':
-                this.finishPathInteraction(pos);
+                this.drawingTools.path.finishDrawing(pos);
                 break;
         }
     }
@@ -539,7 +1267,14 @@ class SVGVectorEditor {
         } else if (this.currentTool === 'path') {
             // Handle double-click to finish path
             if (event.detail === 2) {
-                this.finishPath();
+                this.drawingTools.path.finishPath();
+            } else {
+                // Single click to add path point (only if we didn't drag)
+                const pathTool = this.drawingTools.path;
+                if (!pathTool.isDragging) {
+                    const pos = this.getMousePosition(event);
+                    pathTool.addPathPoint(pos);
+                }
             }
         }
     }
@@ -550,7 +1285,7 @@ class SVGVectorEditor {
         } else if (event.key === 'Escape') {
             this.cancelCurrentOperation();
         } else if (event.key === 'Enter' && this.currentTool === 'path') {
-            this.finishPath();
+            this.drawingTools.path.finishPath();
         }
     }
 
@@ -1454,36 +2189,30 @@ class SVGVectorEditor {
 
     moveElement(element, x, y) {
         const tagName = element.tagName.toLowerCase();
+        let shape;
         
         switch (tagName) {
             case 'line':
-                const x1 = parseFloat(element.getAttribute('x1'));
-                const y1 = parseFloat(element.getAttribute('y1'));
-                const x2 = parseFloat(element.getAttribute('x2'));
-                const y2 = parseFloat(element.getAttribute('y2'));
-                const width = x2 - x1;
-                const height = y2 - y1;
-                
-                element.setAttribute('x1', x);
-                element.setAttribute('y1', y);
-                element.setAttribute('x2', x + width);
-                element.setAttribute('y2', y + height);
+                shape = new LineShape(element);
                 break;
-                
             case 'rect':
-                element.setAttribute('x', x);
-                element.setAttribute('y', y);
+                shape = new RectangleShape(element);
                 break;
-                
             case 'circle':
-                element.setAttribute('cx', x);
-                element.setAttribute('cy', y);
+                shape = new CircleShape(element);
                 break;
-                
             case 'path':
-                // For paths, we need to move all points
-                this.movePath(element, x, y);
+                shape = new PathShape(element);
                 break;
+            default:
+                return;
+        }
+        
+        const refPoint = shape.getReferencePoint();
+        if (refPoint) {
+            const dx = x - refPoint.x;
+            const dy = y - refPoint.y;
+            shape.move(dx, dy);
         }
         
         // Update selection handles and anchor points
@@ -1494,48 +2223,7 @@ class SVGVectorEditor {
         }
     }
 
-    movePath(path, newX, newY) {
-        const d = path.getAttribute('d');
-        const commands = d.match(/[MLC]\s*([^MLC]+)/g) || [];
-        
-        if (commands.length === 0) return;
-        
-        // Get the first point to calculate offset
-        let firstPoint = null;
-        if (commands[0].startsWith('M')) {
-            firstPoint = commands[0].match(/M\s*([-\d.]+)\s+([-\d.]+)/);
-        }
-        if (!firstPoint) return;
-        
-        const offsetX = newX - parseFloat(firstPoint[1]);
-        const offsetY = newY - parseFloat(firstPoint[2]);
-        
-        // Move all points by the offset
-        const newCommands = commands.map(cmd => {
-            if (cmd.startsWith('M') || cmd.startsWith('L')) {
-                const match = cmd.match(/[ML]\s*([-\d.]+)\s+([-\d.]+)/);
-                if (match) {
-                    const x = parseFloat(match[1]) + offsetX;
-                    const y = parseFloat(match[2]) + offsetY;
-                    return cmd.replace(/[ML]\s*[-\d.]+[,\s]+[-\d.]+/, `${cmd[0]} ${x} ${y}`);
-                }
-            } else if (cmd.startsWith('C')) {
-                const parts = cmd.match(/C\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/);
-                if (parts) {
-                    const x1 = parseFloat(parts[1]) + offsetX;
-                    const y1 = parseFloat(parts[2]) + offsetY;
-                    const x2 = parseFloat(parts[3]) + offsetX;
-                    const y2 = parseFloat(parts[4]) + offsetY;
-                    const x3 = parseFloat(parts[5]) + offsetX;
-                    const y3 = parseFloat(parts[6]) + offsetY;
-                    return `C ${x1} ${y1} ${x2} ${y2} ${x3} ${y3}`;
-                }
-            }
-            return cmd;
-        });
-        
-        path.setAttribute('d', newCommands.join(' '));
-    }
+
 
     updateSelectionVisuals() {
         if (this.selectedElement) {
@@ -1547,192 +2235,13 @@ class SVGVectorEditor {
         }
     }
 
-    // Line Tool
-    startDrawingLine(pos) {
-        this.currentElement = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        this.currentElement.setAttribute('x1', pos.x);
-        this.currentElement.setAttribute('y1', pos.y);
-        this.currentElement.setAttribute('x2', pos.x);
-        this.currentElement.setAttribute('y2', pos.y);
-        this.applyCurrentProperties(this.currentElement);
-        this.svg.appendChild(this.currentElement);
-    }
 
-    updateDrawingLine(pos) {
-        if (this.currentElement) {
-            this.currentElement.setAttribute('x2', pos.x);
-            this.currentElement.setAttribute('y2', pos.y);
-        }
-    }
 
-    finishDrawingLine(pos) {
-        if (this.currentElement) {
-            this.elements.push(this.currentElement);
-            const newElement = this.currentElement;
-            this.currentElement = null;
-            
-            // Emit event instead of direct method call
-            this.eventBus.emit('layersChanged');
-            this.handleDrawRepeatForNewElement(newElement);
-        }
-    }
 
-    // Rectangle Tool
-    startDrawingRectangle(pos) {
-        this.currentElement = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        this.currentElement.setAttribute('x', pos.x);
-        this.currentElement.setAttribute('y', pos.y);
-        this.currentElement.setAttribute('width', 0);
-        this.currentElement.setAttribute('height', 0);
-        this.applyCurrentProperties(this.currentElement);
-        this.svg.appendChild(this.currentElement);
-    }
 
-    updateDrawingRectangle(pos) {
-        if (this.currentElement && this.drawingStartPoint) {
-            const start = this.drawingStartPoint;
-            const x = Math.min(start.x, pos.x);
-            const y = Math.min(start.y, pos.y);
-            const width = Math.abs(pos.x - start.x);
-            const height = Math.abs(pos.y - start.y);
-            
-            this.currentElement.setAttribute('x', x);
-            this.currentElement.setAttribute('y', y);
-            this.currentElement.setAttribute('width', width);
-            this.currentElement.setAttribute('height', height);
-        }
-    }
 
-    finishDrawingRectangle(pos) {
-        if (this.currentElement) {
-            this.elements.push(this.currentElement);
-            const newElement = this.currentElement;
-            this.currentElement = null;
-            
-            // Emit event instead of direct method call
-            this.eventBus.emit('layersChanged');
-            this.handleDrawRepeatForNewElement(newElement);
-        }
-    }
 
-    // Circle Tool
-    startDrawingCircle(pos) {
-        this.currentElement = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        this.currentElement.setAttribute('cx', pos.x);
-        this.currentElement.setAttribute('cy', pos.y);
-        this.currentElement.setAttribute('r', 0);
-        this.applyCurrentProperties(this.currentElement);
-        this.svg.appendChild(this.currentElement);
-    }
 
-    updateDrawingCircle(pos) {
-        if (this.currentElement && this.drawingStartPoint) {
-            const start = this.drawingStartPoint;
-            const radius = Math.sqrt(
-                Math.pow(pos.x - start.x, 2) + Math.pow(pos.y - start.y, 2)
-            );
-            this.currentElement.setAttribute('r', radius);
-        }
-    }
-
-    finishDrawingCircle(pos) {
-        if (this.currentElement) {
-            this.elements.push(this.currentElement);
-            const newElement = this.currentElement;
-            this.currentElement = null;
-            
-            // Emit event instead of direct method call
-            this.eventBus.emit('layersChanged');
-            this.handleDrawRepeatForNewElement(newElement);
-        }
-    }
-
-    // Path Tool
-    addPathPoint(pos) {
-        console.log('Adding path point:', pos);
-        if (!this.currentPath) {
-            this.startNewPath(pos);
-            this.eventBus.emit('statusUpdate', 'Path started. Click to add points, double-click or press Enter to finish.');
-        } else {
-            this.addPointToPath(pos);
-            this.eventBus.emit('statusUpdate', `Path: ${this.pathPoints.length} points. Double-click or press Enter to finish.`);
-        }
-    }
-
-    startNewPath(pos) {
-        this.currentPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        this.pathPoints = [pos];
-        this.pathSegments = [];
-        
-        // Create initial segment
-        const initialSegment = {
-            type: 'line',
-            startPoint: pos,
-            endPoint: pos,
-            control1: null,
-            control2: null
-        };
-        this.pathSegments.push(initialSegment);
-        
-        this.currentPath.setAttribute('d', `M ${pos.x} ${pos.y}`);
-        this.applyCurrentProperties(this.currentPath);
-        this.svg.appendChild(this.currentPath);
-        console.log('New path started:', this.currentPath);
-    }
-
-    addPointToPath(pos) {
-        this.pathPoints.push(pos);
-        
-        // Create a straight line segment
-        const startPoint = this.pathSegments.length > 0 ? 
-            this.pathSegments[this.pathSegments.length - 1].endPoint : 
-            this.pathSegments[0].startPoint;
-        
-        const segment = {
-            type: 'line',
-            startPoint: startPoint,
-            endPoint: pos,
-            control1: null,
-            control2: null
-        };
-        
-        this.pathSegments.push(segment);
-        this.updatePathFromSegments();
-    }
-
-    updatePathPreview(pos) {
-        if (this.currentPath && this.pathSegments.length > 0) {
-            let pathData = this.buildPathDataFromSegments();
-            pathData += ` L ${pos.x} ${pos.y}`;
-            this.currentPath.setAttribute('d', pathData);
-        }
-    }
-
-    finishPath() {
-        console.log('finishPath called, currentPath:', this.currentPath);
-        if (this.currentPath) {
-            // Remove any preview lines
-            this.removeControlPointPreview();
-            
-            // Ensure the path is properly added to elements array
-            this.elements.push(this.currentPath);
-            console.log('Path added to elements. Total elements:', this.elements.length);
-            console.log('Path element:', this.currentPath);
-            console.log('Path data:', this.currentPath.getAttribute('d'));
-            const finalized = this.currentPath;
-            this.currentPath = null;
-            this.pathPoints = [];
-            this.pathSegments = [];
-            
-            // Emit events instead of direct method calls
-            this.eventBus.emit('layersChanged');
-            this.eventBus.emit('statusUpdate', 'Path completed');
-            // Handle draw-repeat cloning for newly created path
-            this.handleDrawRepeatForNewElement(finalized);
-        } else {
-            console.log('No currentPath to finish!');
-        }
-    }
 
     // ===== Repeat Points core logic =====
     handleCreateRepeatPoints() {
@@ -1867,172 +2376,82 @@ class SVGVectorEditor {
 
     getElementReferencePoint(element) {
         const tag = element.tagName.toLowerCase();
+        let shape;
+        
         switch (tag) {
             case 'line':
-                return { x: parseFloat(element.getAttribute('x1')), y: parseFloat(element.getAttribute('y1')) };
+                shape = new LineShape(element);
+                break;
             case 'rect':
-                return { x: parseFloat(element.getAttribute('x')), y: parseFloat(element.getAttribute('y')) };
+                shape = new RectangleShape(element);
+                break;
             case 'circle':
-                return { x: parseFloat(element.getAttribute('cx')), y: parseFloat(element.getAttribute('cy')) };
+                shape = new CircleShape(element);
+                break;
             case 'path':
-                const d = element.getAttribute('d');
-                const m = d && d.match(/M\s*([-\d.]+)\s+([-\d.]+)/);
-                if (m) return { x: parseFloat(m[1]), y: parseFloat(m[2]) };
-                return null;
+                shape = new PathShape(element);
+                break;
             default:
                 return null;
         }
+        
+        return shape.getReferencePoint();
     }
 
     cloneElementWithTranslation(element, dx, dy) {
         const tag = element.tagName.toLowerCase();
-        let clone = null;
-        if (tag === 'line') {
-            clone = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-            ['stroke', 'fill', 'stroke-width', 'opacity'].forEach(a => clone.setAttribute(a, element.getAttribute(a)));
-            const x1 = parseFloat(element.getAttribute('x1')) + dx;
-            const y1 = parseFloat(element.getAttribute('y1')) + dy;
-            const x2 = parseFloat(element.getAttribute('x2')) + dx;
-            const y2 = parseFloat(element.getAttribute('y2')) + dy;
-            clone.setAttribute('x1', x1);
-            clone.setAttribute('y1', y1);
-            clone.setAttribute('x2', x2);
-            clone.setAttribute('y2', y2);
-        } else if (tag === 'rect') {
-            clone = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-            ['stroke', 'fill', 'stroke-width', 'opacity', 'width', 'height'].forEach(a => element.getAttribute(a) != null && clone.setAttribute(a, element.getAttribute(a)));
-            const x = parseFloat(element.getAttribute('x')) + dx;
-            const y = parseFloat(element.getAttribute('y')) + dy;
-            clone.setAttribute('x', x);
-            clone.setAttribute('y', y);
-        } else if (tag === 'circle') {
-            clone = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            ['stroke', 'fill', 'stroke-width', 'opacity', 'r'].forEach(a => element.getAttribute(a) != null && clone.setAttribute(a, element.getAttribute(a)));
-            const cx = parseFloat(element.getAttribute('cx')) + dx;
-            const cy = parseFloat(element.getAttribute('cy')) + dy;
-            clone.setAttribute('cx', cx);
-            clone.setAttribute('cy', cy);
-        } else if (tag === 'path') {
-            clone = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            ['stroke', 'fill', 'stroke-width', 'opacity'].forEach(a => clone.setAttribute(a, element.getAttribute(a)));
-            const d = element.getAttribute('d');
-            const translated = (d || '').replace(/([MLC])\s*([\-\d.]+)\s+([\-\d.]+)(?:\s+([\-\d.]+)\s+([\-\d.]+)\s+([\-\d.]+)\s+([\-\d.]+))?/g, (m, cmd, a1, a2, a3, a4, a5, a6) => {
-                if (cmd === 'M' || cmd === 'L') {
-                    const x = parseFloat(a1) + dx;
-                    const y = parseFloat(a2) + dy;
-                    return `${cmd} ${x} ${y}`;
-                } else if (cmd === 'C') {
-                    const x1 = parseFloat(a1) + dx;
-                    const y1 = parseFloat(a2) + dy;
-                    const x2 = parseFloat(a3) + dx;
-                    const y2 = parseFloat(a4) + dy;
-                    const x3 = parseFloat(a5) + dx;
-                    const y3 = parseFloat(a6) + dy;
-                    return `${cmd} ${x1} ${y1} ${x2} ${y2} ${x3} ${y3}`;
-                }
-                return m;
-            });
-            clone.setAttribute('d', translated);
+        let shape;
+        
+        switch (tag) {
+            case 'line':
+                shape = new LineShape(element);
+                break;
+            case 'rect':
+                shape = new RectangleShape(element);
+                break;
+            case 'circle':
+                shape = new CircleShape(element);
+                break;
+            case 'path':
+                shape = new PathShape(element);
+                break;
+            default:
+                return null;
         }
+        
+        const clone = shape.clone();
+        
+        // Create a shape object for the clone so we can move it
+        let cloneShape;
+        switch (tag) {
+            case 'line':
+                cloneShape = new LineShape(clone);
+                break;
+            case 'rect':
+                cloneShape = new RectangleShape(clone);
+                break;
+            case 'circle':
+                cloneShape = new CircleShape(clone);
+                break;
+            case 'path':
+                cloneShape = new PathShape(clone);
+                break;
+        }
+        
+        cloneShape.move(dx, dy);
         return clone;
     }
 
     // Enhanced Path Tool Methods for Curved Paths
-    startPathInteraction(pos) {
-        console.log('Starting path interaction at:', pos);
-        if (!this.currentPath) {
-            this.startNewPath(pos);
-            this.eventBus.emit('statusUpdate', 'Path started. Click to add points, drag to create curves. Double-click or press Enter to finish.');
-        } else {
-            // Start a potential curve creation
-            this.startPotentialCurve(pos);
-        }
-    }
 
-    startPotentialCurve(pos) {
-        // Store the position where we started dragging
-        this.curveStartPoint = pos;
-        this.isCreatingCurve = true;
-                    this.eventBus.emit('statusUpdate', 'Drag to create curve, release to finish');
-        console.log('Starting potential curve at:', pos);
-    }
 
-    updatePathInteraction(pos) {
-        if (this.isCreatingCurve && this.curveStartPoint) {
-            // Show preview of the curve being created
-            this.updateCurvePreview(pos);
-        } else if (this.currentPath && this.pathSegments.length > 0) {
-            // Show preview of next segment
-            this.updatePathPreview(pos);
-        }
-        
-        // Update cursor to indicate curve creation
-        if (this.isCreatingCurve) {
-            this.svg.style.cursor = 'crosshair';
-        }
-    }
 
-    updateCurvePreview(pos) {
-        if (!this.currentPath || !this.curveStartPoint) return;
-        
-        // Calculate control points for the curve
-        const startPoint = this.pathSegments.length > 0 ? 
-            this.pathSegments[this.pathSegments.length - 1].endPoint : 
-            this.pathSegments[0].startPoint;
-        
-        // Create temporary control points
-        const control1 = {
-            x: startPoint.x + (this.curveStartPoint.x - startPoint.x) * 0.3,
-            y: startPoint.y + (this.curveStartPoint.y - startPoint.y) * 0.3
-        };
-        const control2 = {
-            x: this.curveStartPoint.x + (pos.x - this.curveStartPoint.x) * 0.7,
-            y: this.curveStartPoint.y + (pos.y - this.curveStartPoint.y) * 0.7
-        };
-        
-        // Build path data with the curve preview
-        let pathData = this.buildPathDataFromSegments();
-        pathData += ` C ${control1.x} ${control1.y} ${control2.x} ${control2.y} ${pos.x} ${pos.y}`;
-        
-        this.currentPath.setAttribute('d', pathData);
-        
-        // Show control point preview lines
-        this.showControlPointPreview(startPoint, control1, control2, pos);
-    }
 
-    showControlPointPreview(startPoint, control1, control2, endPoint) {
-        // Remove existing preview lines
-        this.removeControlPointPreview();
-        
-        // Create preview lines for control points
-        this.controlPreviewLines = [];
-        
-        // Line from start to control1
-        const line1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line1.setAttribute('x1', startPoint.x);
-        line1.setAttribute('y1', startPoint.y);
-        line1.setAttribute('x2', control1.x);
-        line1.setAttribute('y2', control1.y);
-        line1.setAttribute('stroke', '#f39c12');
-        line1.setAttribute('stroke-width', '1');
-        line1.setAttribute('stroke-dasharray', '5,5');
-        line1.setAttribute('opacity', '0.6');
-        this.svg.appendChild(line1);
-        this.controlPreviewLines.push(line1);
-        
-        // Line from control2 to end
-        const line2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line2.setAttribute('x1', control2.x);
-        line2.setAttribute('y1', control2.y);
-        line2.setAttribute('x2', endPoint.x);
-        line2.setAttribute('y2', endPoint.y);
-        line2.setAttribute('stroke', '#f39c12');
-        line2.setAttribute('stroke-width', '1');
-        line2.setAttribute('stroke-dasharray', '5,5');
-        line2.setAttribute('opacity', '0.6');
-        this.svg.appendChild(line2);
-        this.controlPreviewLines.push(line2);
-    }
+
+
+
+
+
 
     removeControlPointPreview() {
         if (this.controlPreviewLines) {
@@ -2041,101 +2460,9 @@ class SVGVectorEditor {
         }
     }
 
-    finishPathInteraction(pos) {
-        // Remove control point preview
-        this.removeControlPointPreview();
-        
-        if (this.isCreatingCurve && this.curveStartPoint) {
-            // Create a curved segment
-            this.createCurvedSegment(pos);
-            this.isCreatingCurve = false;
-            this.curveStartPoint = null;
-        } else {
-            // Create a straight segment
-            this.createStraightSegment(pos);
-        }
-        
-        this.eventBus.emit('statusUpdate', `Path: ${this.pathSegments.length} segments. Double-click or press Enter to finish.`);
-    }
 
-    createStraightSegment(endPoint) {
-        const startPoint = this.pathSegments.length > 0 ? 
-            this.pathSegments[this.pathSegments.length - 1].endPoint : 
-            this.pathSegments[0].startPoint;
-        
-        const segment = {
-            type: 'line',
-            startPoint: startPoint,
-            endPoint: endPoint,
-            control1: null,
-            control2: null
-        };
-        
-        this.pathSegments.push(segment);
-        this.updatePathFromSegments();
-    }
 
-    createCurvedSegment(endPoint) {
-        const startPoint = this.pathSegments.length > 0 ? 
-            this.pathSegments[this.pathSegments.length - 1].endPoint : 
-            this.pathSegments[0].startPoint;
-        
-        // Calculate control points based on drag distance and direction
-        const dragVector = {
-            x: endPoint.x - this.curveStartPoint.x,
-            y: endPoint.y - this.curveStartPoint.y
-        };
-        
-        const control1 = {
-            x: startPoint.x + (this.curveStartPoint.x - startPoint.x) * 0.3,
-            y: startPoint.y + (this.curveStartPoint.y - startPoint.y) * 0.3
-        };
-        
-        const control2 = {
-            x: this.curveStartPoint.x + dragVector.x * 0.7,
-            y: this.curveStartPoint.y + dragVector.y * 0.7
-        };
-        
-        const segment = {
-            type: 'curve',
-            startPoint: startPoint,
-            endPoint: endPoint,
-            control1: control1,
-            control2: control2
-        };
-        
-        this.pathSegments.push(segment);
-        this.updatePathFromSegments();
-    }
 
-    updatePathFromSegments() {
-        if (!this.currentPath) return;
-        
-        const pathData = this.buildPathDataFromSegments();
-        this.currentPath.setAttribute('d', pathData);
-        console.log('Updated path data:', pathData);
-    }
-
-    buildPathDataFromSegments() {
-        if (this.pathSegments.length === 0) return '';
-        
-        let pathData = '';
-        
-        this.pathSegments.forEach((segment, index) => {
-            if (index === 0) {
-                // First segment - start with move command
-                pathData += `M ${segment.startPoint.x} ${segment.startPoint.y}`;
-            }
-            
-            if (segment.type === 'line') {
-                pathData += ` L ${segment.endPoint.x} ${segment.endPoint.y}`;
-            } else if (segment.type === 'curve') {
-                pathData += ` C ${segment.control1.x} ${segment.control1.y} ${segment.control2.x} ${segment.control2.y} ${segment.endPoint.x} ${segment.endPoint.y}`;
-            }
-        });
-        
-        return pathData;
-    }
 
     // Control Point Methods
     startControlPointDragging(pos) {
@@ -2411,13 +2738,13 @@ class SVGVectorEditor {
             this.currentElement.remove();
             this.currentElement = null;
         }
-        if (this.currentPath) {
+        if (this.drawingTools.path.currentPath) {
             // Auto-finalize the path instead of just removing it
             console.log('Auto-finalizing path due to cancel operation');
-            this.finishPath();
+            this.drawingTools.path.finishPath();
         }
         // Remove any preview lines
-        this.removeControlPointPreview();
+        this.drawingTools.path.removeControlPointPreview();
         this.isDrawing = false;
         this.clearSelection();
     }
@@ -2432,10 +2759,10 @@ class SVGVectorEditor {
             this.currentElement.remove();
             this.currentElement = null;
         }
-        if (this.currentPath) {
-            this.currentPath.remove();
-            this.currentPath = null;
-            this.pathPoints = [];
+        if (this.drawingTools.path.currentPath) {
+            this.drawingTools.path.currentPath.remove();
+            this.drawingTools.path.currentPath = null;
+            this.drawingTools.path.pathPoints = [];
         }
         
         this.clearSelection();

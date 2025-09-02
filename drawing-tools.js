@@ -76,7 +76,7 @@ class LineTool extends DrawingTool {
             const newElement = this.currentElement;
             
             this.editor.eventBus.emit('layersChanged');
-            this.editor.handleDrawRepeatForNewElement(newElement);
+            this.editor.repeatPointsManager.handleDrawRepeatForNewElement(newElement);
         }
     }
 }
@@ -114,7 +114,7 @@ class RectangleTool extends DrawingTool {
             const newElement = this.currentElement;
             
             this.editor.eventBus.emit('layersChanged');
-            this.editor.handleDrawRepeatForNewElement(newElement);
+            this.editor.repeatPointsManager.handleDrawRepeatForNewElement(newElement);
         }
     }
 }
@@ -146,7 +146,7 @@ class CircleTool extends DrawingTool {
             const newElement = this.currentElement;
             
             this.editor.eventBus.emit('layersChanged');
-            this.editor.handleDrawRepeatForNewElement(newElement);
+            this.editor.repeatPointsManager.handleDrawRepeatForNewElement(newElement);
         }
     }
 }
@@ -472,7 +472,7 @@ class PathTool extends DrawingTool {
             
             this.editor.eventBus.emit('layersChanged');
             this.editor.eventBus.emit('statusUpdate', 'Path completed');
-            this.editor.handleDrawRepeatForNewElement(finalized);
+            this.editor.repeatPointsManager.handleDrawRepeatForNewElement(finalized);
         }
     }
 

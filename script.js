@@ -4,6 +4,7 @@ import {ZoomPanManager} from './zoom-pan-manager.js';
 import {EventBus} from './event-bus.js';
 import {PropertiesManager} from './properties-manager.js';
 import {SelectionManager} from './selection-manager.js';
+import {RepeatPointsManager} from './repeat-points-manager.js';
 
 class SVGVectorEditor {
     constructor() {
@@ -17,7 +18,6 @@ class SVGVectorEditor {
         this.pathSegments = []; // New: stores path segments with anchor and control points
         this.drawingStartPoint = null;
         this.anchorPoints = [];
-        this.repeatPoints = []; // overlay elements for repeat points of selected element
         this.controlPoints = []; // New: stores control points for curves
         this.selectedAnchorPoint = null;
         this.isDraggingAnchor = false;
@@ -39,6 +39,9 @@ class SVGVectorEditor {
         
         // Initialize selection manager
         this.selectionManager = new SelectionManager(this, this.overlay, this.eventBus);
+        
+        // Initialize repeat points manager
+        this.repeatPointsManager = new RepeatPointsManager(this, this.overlay, this.eventBus);
         
         // Initialize drawing tools
         this.drawingTools = {
@@ -65,13 +68,13 @@ class SVGVectorEditor {
             this.propertiesManager.updatePropertiesPanel(element);
             this.selectionManager.showSelectionHandles(element);
             this.showAnchorPoints(element);
-            this.renderRepeatPoints(element);
+            this.repeatPointsManager.renderRepeatPoints(element);
         });
 
         // Listen for selection cleared events
         this.eventBus.on('selectionCleared', () => {
             this.selectionManager.clearSelectionHandles();
-            this.clearRepeatPoints();
+            this.repeatPointsManager.clearRepeatPoints();
         });
 
         // Listen for selection cleared events (for anchor points)
@@ -141,13 +144,13 @@ class SVGVectorEditor {
         // Repeat points controls
         const createRepeatBtn = document.getElementById('createRepeatPoints');
         const repeatCountInput = document.getElementById('repeatCount');
-        if (createRepeatBtn && repeatCountInput) {
-            createRepeatBtn.addEventListener('click', () => this.handleCreateRepeatPoints());
+                if (createRepeatBtn && repeatCountInput) {
+            createRepeatBtn.addEventListener('click', () => this.repeatPointsManager.handleCreateRepeatPoints());
             repeatCountInput.addEventListener('change', () => {
-                        if (this.selectionManager.getSelectedElement() && this.getRepeatMeta(this.selectionManager.getSelectedElement())) {
-            this.createOrUpdateRepeatPoints(this.selectionManager.getSelectedElement(), parseInt(repeatCountInput.value, 10));
-            this.renderRepeatPoints(this.selectionManager.getSelectedElement());
-        }
+                if (this.selectionManager.getSelectedElement() && this.repeatPointsManager.getRepeatMeta(this.selectionManager.getSelectedElement())) {
+                    this.repeatPointsManager.createOrUpdateRepeatPoints(this.selectionManager.getSelectedElement(), parseInt(repeatCountInput.value, 10));
+                    this.repeatPointsManager.renderRepeatPoints(this.selectionManager.getSelectedElement());
+                }
             });
             // Prevent backspace from triggering delete operation
             repeatCountInput.addEventListener('keydown', (e) => {
@@ -442,11 +445,7 @@ class SVGVectorEditor {
         }
     }
 
-    // Repeat points overlay helpers
-    clearRepeatPoints() {
-        this.repeatPoints.forEach(p => p.remove());
-        this.repeatPoints = [];
-    }
+
 
     showAnchorPoints(element) {
         const tagName = element.tagName.toLowerCase();
@@ -931,8 +930,8 @@ class SVGVectorEditor {
 
         // Recompute repeat points for this path as geometry changed
         if (this.selectionManager.getSelectedElement() === path && path.__repeatMeta && path.__repeatMeta.count > 0) {
-            this.createOrUpdateRepeatPoints(path, path.__repeatMeta.count);
-            this.renderRepeatPoints(path);
+            this.repeatPointsManager.createOrUpdateRepeatPoints(path, path.__repeatMeta.count);
+            this.repeatPointsManager.renderRepeatPoints(path);
         }
     }
 
@@ -1154,204 +1153,28 @@ class SVGVectorEditor {
 
 
 
-    // ===== Repeat Points core logic =====
-    handleCreateRepeatPoints() {
-        if (!this.selectionManager.getSelectedElement()) {
-            this.showMessage('Select a line or path to create repeat points', 'error');
-            return;
-        }
-        const tag = this.selectionManager.getSelectedElement().tagName.toLowerCase();
-        if (!(tag === 'line' || tag === 'path')) {
-            this.showMessage('Repeat points currently supported for line and path', 'error');
-            return;
-        }
-        const count = Math.max(1, Math.min(500, parseInt(document.getElementById('repeatCount').value, 10) || 10));
-        this.createOrUpdateRepeatPoints(this.selectionManager.getSelectedElement(), count);
-        this.renderRepeatPoints(this.selectionManager.getSelectedElement());
-        this.eventBus.emit('statusUpdate', `Created ${count} repeat points`);
-    }
 
-    getRepeatMeta(element) {
-        if (!element.__repeatMeta) {
-            element.__repeatMeta = { count: 0, points: [], activeIndex: null };
-        }
-        return element.__repeatMeta;
-    }
 
-    createOrUpdateRepeatPoints(element, count) {
-        const meta = this.getRepeatMeta(element);
-        meta.count = count;
-        meta.points = this.computeRepeatPointsForElement(element, count);
-        if (meta.activeIndex != null && (meta.activeIndex < 0 || meta.activeIndex >= meta.points.length)) {
-            meta.activeIndex = null;
-        }
-    }
 
-    computeRepeatPointsForElement(element, count) {
-        const tag = element.tagName.toLowerCase();
-        const points = [];
-        if (count <= 0) return points;
-        if (tag === 'line') {
-            const x1 = parseFloat(element.getAttribute('x1'));
-            const y1 = parseFloat(element.getAttribute('y1'));
-            const x2 = parseFloat(element.getAttribute('x2'));
-            const y2 = parseFloat(element.getAttribute('y2'));
-            for (let i = 0; i < count; i++) {
-                const t = count === 1 ? 0.5 : i / (count - 1);
-                points.push({ t, x: x1 + (x2 - x1) * t, y: y1 + (y2 - y1) * t });
-            }
-        } else if (tag === 'path') {
-            try {
-                const total = element.getTotalLength();
-                for (let i = 0; i < count; i++) {
-                    const t = count === 1 ? 0.5 : i / (count - 1);
-                    const pt = element.getPointAtLength(total * t);
-                    points.push({ t, x: pt.x, y: pt.y });
-                }
-            } catch (e) {
-                console.warn('Path length API error, fallback disabled', e);
-            }
-        }
-        return points;
-    }
 
-    renderRepeatPoints(element) {
-        this.clearRepeatPoints();
-        if (!element || !element.__repeatMeta || element.__repeatMeta.points.length === 0) return;
-        const meta = element.__repeatMeta;
-        const elementId = this.elements.indexOf(element);
-        meta.points.forEach((p, index) => {
-            const rp = document.createElement('div');
-            rp.className = 'repeat-point' + (meta.activeIndex === index ? ' selected' : '');
-            rp.style.left = p.x + 'px';
-            rp.style.top = p.y + 'px';
-            rp.dataset.elementId = elementId;
-            rp.dataset.index = index;
-            rp.addEventListener('mousedown', (e) => {
-                e.stopPropagation();
-                this.setActiveRepeatPoint(element, index);
-            });
-            this.overlay.appendChild(rp);
-            this.repeatPoints.push(rp);
-        });
-    }
 
-    clearRepeatPoints() {
-        this.repeatPoints.forEach(p => p.remove());
-        this.repeatPoints = [];
-    }
 
-    setActiveRepeatPoint(element, index) {
-        const meta = this.getRepeatMeta(element);
-        // Toggle selection: if clicking the same point, deselect it
-        if (meta.activeIndex === index) {
-            meta.activeIndex = null;
-            this.selectedRepeatPoint = null;
-            this.renderRepeatPoints(element);
-            this.eventBus.emit('statusUpdate', 'No repeat point active');
-        } else {
-            meta.activeIndex = index;
-            this.renderRepeatPoints(element);
-            this.eventBus.emit('statusUpdate', `Active repeat point: ${index + 1}/${meta.points.length}`);
-            this.selectedRepeatPoint = { element, index };
-        }
-    }
+    
+
+
+
+
+
+
 
     // Clone newly drawn element relative to repeat points
-    handleDrawRepeatForNewElement(newElement) {
-        if (!this.selectedRepeatPoint) return;
-        const { element: sourceElement, index } = this.selectedRepeatPoint;
-        if (!sourceElement || !sourceElement.__repeatMeta || sourceElement.__repeatMeta.points.length === 0) return;
-        const points = sourceElement.__repeatMeta.points;
-        const active = points[index];
-        if (!active) return;
 
-        const ref = this.getElementReferencePoint(newElement);
-        if (!ref) return;
 
-        const clones = [];
-        for (let i = 0; i < points.length; i++) {
-            if (i === index) continue; // Skip the active point - original element stays where user drew it
-            const p = points[i];
-            // Calculate the offset from this repeat point to where the clone should be positioned
-            // The clone should be at the same distance from this repeat point as the original is from the active repeat point
-            const cloneDeltaX = ref.x - active.x;
-            const cloneDeltaY = ref.y - active.y;
-            const clone = this.cloneElementWithTranslation(newElement, p.x + cloneDeltaX - ref.x, p.y + cloneDeltaY - ref.y);
-            if (clone) clones.push(clone);
-        }
-        clones.forEach(node => this.svg.appendChild(node));
-        clones.forEach(node => this.elements.push(node));
-        if (clones.length > 0) this.eventBus.emit('layersChanged');
-    }
 
-    getElementReferencePoint(element) {
-        const tag = element.tagName.toLowerCase();
-        let shape;
-        
-        switch (tag) {
-            case 'line':
-                shape = new LineShape(element);
-                break;
-            case 'rect':
-                shape = new RectangleShape(element);
-                break;
-            case 'circle':
-                shape = new CircleShape(element);
-                break;
-            case 'path':
-                shape = new PathShape(element);
-                break;
-            default:
-                return null;
-        }
-        
-        return shape.getReferencePoint();
-    }
 
-    cloneElementWithTranslation(element, dx, dy) {
-        const tag = element.tagName.toLowerCase();
-        let shape;
-        
-        switch (tag) {
-            case 'line':
-                shape = new LineShape(element);
-                break;
-            case 'rect':
-                shape = new RectangleShape(element);
-                break;
-            case 'circle':
-                shape = new CircleShape(element);
-                break;
-            case 'path':
-                shape = new PathShape(element);
-                break;
-            default:
-                return null;
-        }
-        
-        const clone = shape.clone();
-        
-        // Create a shape object for the clone so we can move it
-        let cloneShape;
-        switch (tag) {
-            case 'line':
-                cloneShape = new LineShape(clone);
-                break;
-            case 'rect':
-                cloneShape = new RectangleShape(clone);
-                break;
-            case 'circle':
-                cloneShape = new CircleShape(clone);
-                break;
-            case 'path':
-                cloneShape = new PathShape(clone);
-                break;
-        }
-        
-        cloneShape.move(dx, dy);
-        return clone;
-    }
+
+
+
 
     // Enhanced Path Tool Methods for Curved Paths
     removeControlPointPreview() {
@@ -1587,9 +1410,9 @@ class SVGVectorEditor {
             // Emit event instead of direct method call
             this.eventBus.emit('layersChanged');
             
-            if (this.selectedRepeatPoint && this.selectedRepeatPoint.element === element) {
-                this.selectedRepeatPoint = null;
-            }
+                    if (this.repeatPointsManager.getSelectedRepeatPoint() && this.repeatPointsManager.getSelectedRepeatPoint().element === element) {
+            this.repeatPointsManager.clearRepeatPointsForElement(element);
+        }
         }
     }
 
@@ -1627,7 +1450,7 @@ class SVGVectorEditor {
         
         this.selectionManager.clearSelection();
         // Clear any active repeat point when canvas is cleared
-        this.selectedRepeatPoint = null;
+        this.repeatPointsManager.clearSelectedRepeatPoint();
         
         // Emit events instead of direct method calls
         this.eventBus.emit('layersChanged');

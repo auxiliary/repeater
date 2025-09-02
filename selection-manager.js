@@ -163,8 +163,8 @@ class SelectionManager {
         
         // Recompute repeat points for moved element
         if (this.selectedElement.__repeatMeta && this.selectedElement.__repeatMeta.count > 0) {
-            this.editor.createOrUpdateRepeatPoints(this.selectedElement, this.selectedElement.__repeatMeta.count);
-            this.editor.renderRepeatPoints(this.selectedElement);
+            this.editor.repeatPointsManager.createOrUpdateRepeatPoints(this.selectedElement, this.selectedElement.__repeatMeta.count);
+            this.editor.repeatPointsManager.renderRepeatPoints(this.selectedElement);
         }
     }
 
@@ -206,8 +206,8 @@ class SelectionManager {
         
         // Update repeat points if this element has them
         if (this.selectedElement === element && element.__repeatMeta && element.__repeatMeta.count > 0) {
-            this.editor.createOrUpdateRepeatPoints(element, element.__repeatMeta.count);
-            this.editor.renderRepeatPoints(element);
+            this.editor.repeatPointsManager.createOrUpdateRepeatPoints(element, element.__repeatMeta.count);
+            this.editor.repeatPointsManager.renderRepeatPoints(element);
         }
     }
 
